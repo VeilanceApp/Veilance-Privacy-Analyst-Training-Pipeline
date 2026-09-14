@@ -1,0 +1,416 @@
+{
+  "telemetry": {
+    "schemaVersion": "veilance.telemetry-snapshot.v2",
+    "eventId": "example-virustotal-0001",
+    "extensionVersion": "0.8.0",
+    "site": {
+      "hostname": "www.virustotal.com",
+      "https": true
+    },
+    "observation": {
+      "durationSeconds": 41,
+      "totalRequests": 23,
+      "firstPartyRequests": 10,
+      "thirdPartyRequests": 13
+    },
+    "thirdPartyHosts": [
+      {
+        "host": "www.gstatic.com",
+        "requests": 5,
+        "resourceTypes": {
+          "script": 5
+        }
+      },
+      {
+        "host": "fonts.googleapis.com",
+        "requests": 2,
+        "resourceTypes": {
+          "stylesheet": 2
+        }
+      },
+      {
+        "host": "fonts.gstatic.com",
+        "requests": 2,
+        "resourceTypes": {
+          "font": 2
+        }
+      },
+      {
+        "host": "recaptcha.net",
+        "requests": 2,
+        "resourceTypes": {
+          "script": 2
+        }
+      },
+      {
+        "host": "www.google-analytics.com",
+        "requests": 1,
+        "resourceTypes": {
+          "script": 1
+        }
+      },
+      {
+        "host": "www.googletagmanager.com",
+        "requests": 1,
+        "resourceTypes": {
+          "script": 1
+        }
+      }
+    ],
+    "trackers": [
+      {
+        "id": "google-analytics",
+        "category": "analytics",
+        "requests": 1
+      },
+      {
+        "id": "site-analytics",
+        "category": "analytics",
+        "requests": 1
+      },
+      {
+        "id": "google-tag",
+        "category": "advertising",
+        "requests": 1
+      },
+      {
+        "id": "tag-manager",
+        "category": "tag-manager",
+        "requests": 1
+      }
+    ],
+    "signals": [
+      {
+        "indicatorId": "navigator-characteristics",
+        "api": "Navigator",
+        "action": "read-user-agent",
+        "count": 38
+      },
+      {
+        "indicatorId": "cookie-access",
+        "api": "Cookie",
+        "action": "read",
+        "count": 6
+      },
+      {
+        "indicatorId": "device-sensors",
+        "api": "Battery",
+        "action": "read-status",
+        "count": 1
+      },
+      {
+        "indicatorId": "navigator-characteristics",
+        "api": "Navigator",
+        "action": "read-hardware-concurrency",
+        "count": 1
+      },
+      {
+        "indicatorId": "navigator-characteristics",
+        "api": "Navigator",
+        "action": "read-device-memory",
+        "count": 1
+      },
+      {
+        "indicatorId": "browser-storage",
+        "api": "ServiceWorker",
+        "action": "register",
+        "count": 1
+      },
+      {
+        "indicatorId": "browser-storage",
+        "api": "Storage",
+        "action": "remove",
+        "count": 1
+      }
+    ],
+    "page": {
+      "scriptCount": 18,
+      "thirdPartyScriptCount": 9,
+      "iframeCount": 1,
+      "thirdPartyIframeCount": 1,
+      "accessibleCookieCount": 0,
+      "localStorageKeyCount": 1,
+      "sessionStorageKeyCount": 2,
+      "indexedDbCount": 1,
+      "cacheCount": 1,
+      "serviceWorkerControlled": true
+    },
+    "security": {
+      "contentSecurityPolicy": true,
+      "strictTransportSecurity": true,
+      "permissionsPolicy": true,
+      "referrerPolicy": true,
+      "xFrameOptions": true,
+      "crossOriginOpenerPolicy": false,
+      "crossOriginResourcePolicy": false
+    },
+    "interest": {
+      "score": 52,
+      "level": "active",
+      "minimumScore": 20,
+      "eligible": true,
+      "reasons": [
+        {
+          "id": "known-tracker-infrastructure",
+          "severity": "medium",
+          "points": 20
+        },
+        {
+          "id": "browser-characteristics",
+          "severity": "low",
+          "points": 12
+        },
+        {
+          "id": "browser-storage",
+          "severity": "low",
+          "points": 10
+        },
+        {
+          "id": "third-party-surface",
+          "severity": "low",
+          "points": 10
+        }
+      ]
+    },
+    "redactedDocument": {
+      "format": "veilance.redacted-html.v1",
+      "html": "<!doctype html>\\n<html><head></head><body>[REDACTED TEXT]</body></html>",
+      "truncated": false,
+      "originalElementCount": 100,
+      "serializedChars": 68,
+      "redaction": {
+        "textNodesRedacted": 1,
+        "attributesRemoved": 0,
+        "urlsReduced": 0,
+        "privateUrlsRemoved": 0,
+        "inlineScriptsRedacted": 0,
+        "styleBlocksRedacted": 0,
+        "formControlsRedacted": 0,
+        "commentsRemoved": 0,
+        "opaqueNodesRedacted": 0,
+        "nodesOmitted": 0
+      },
+      "evidence": {
+        "resourceHosts": [],
+        "inlineScriptHints": {
+          "canvas": 0,
+          "webgl": 0,
+          "webgpu": 0,
+          "audio": 0,
+          "fonts": 0,
+          "navigator": 1,
+          "screen": 0,
+          "webrtc": 0,
+          "advertising": 1,
+          "antiBlocking": 0
+        },
+        "domMarkers": {
+          "advertising": 0,
+          "consent": 0,
+          "antiBlocking": 0,
+          "tracking": 0
+        }
+      }
+    }
+  },
+  "policy_document": {
+    "url": "https://cloud.google.com/terms/secops/privacy-notice",
+    "found": true,
+    "applicable": true,
+    "sections": [
+      {
+        "heading": "Personal Information We Collect",
+        "text": "EXAMPLE PLACEHOLDER: replace this with the actual policy section text used to support the labeled report."
+      },
+      {
+        "heading": "Why We Process Your Information",
+        "text": "EXAMPLE PLACEHOLDER: replace this with the actual policy section text used to support the labeled report."
+      },
+      {
+        "heading": "How We Share Your Information",
+        "text": "EXAMPLE PLACEHOLDER: replace this with the actual policy section text used to support the labeled report."
+      }
+    ]
+  },
+  "expected": {
+    "domain": "https://www.virustotal.com",
+    "privacy_policy": {
+      "url": "https://cloud.google.com/terms/secops/privacy-notice",
+      "found": true,
+      "applicable": true
+    },
+    "visit": {
+      "observed_at": null,
+      "duration_seconds": 41
+    },
+    "analysis": {
+      "summary": "During this 41-second visit, Veilance observed analytics and tag-manager requests, cookie access, browser storage activity, and collection of several browser and device characteristics. The policy explicitly covers analytics and broadly covers technical details, device identifiers, and cookie or token identifiers. Browser storage activity and an advertising-classified tracker were not clearly disclosed. No direct contradiction was identified.",
+      "overall_confidence": 0.84,
+      "counts": {
+        "matched": 1,
+        "partially_matched": 3,
+        "policy_only": 0,
+        "observed_only": 2,
+        "possible_contradictions": 0,
+        "indeterminate": 0
+      }
+    },
+    "findings": [
+      {
+        "behavior": "analytics",
+        "category": "analytics",
+        "description": "An analytics service and tag manager were contacted during the visit.",
+        "policy": {
+          "status": "explicitly_disclosed",
+          "evidence": "The policy describes collection of technical and operational details and use of personal information for analytics and measurement to understand how the services are used.",
+          "section": "Personal Information We Collect; Why We Process Your Information"
+        },
+        "telemetry": {
+          "status": "observed",
+          "evidence": [
+            "www.google-analytics.com received 1 script request",
+            "www.googletagmanager.com received 1 script request",
+            "A Google Analytics tracker was detected with 1 request",
+            "A site analytics tracker was detected with 1 request",
+            "A tag-manager tracker was detected with 1 request"
+          ],
+          "observation_count": 2
+        },
+        "comparison": "matched",
+        "severity": "informational",
+        "confidence": 0.94,
+        "explanation": "The observed analytics-related requests correspond directly to the policy's disclosure of analytics and measurement. The telemetry does not establish what information was transmitted or whether the tag manager activated additional services."
+      },
+      {
+        "behavior": "cookies",
+        "category": "cookies",
+        "description": "Page JavaScript accessed cookies during the visit.",
+        "policy": {
+          "status": "broadly_disclosed",
+          "evidence": "The policy states that technical and operational information may include identifiers from cookies or tokens.",
+          "section": "Personal Information We Collect"
+        },
+        "telemetry": {
+          "status": "observed",
+          "evidence": [
+            "Cookie.read observed 6 times",
+            "The page reported 0 accessible cookies"
+          ],
+          "observation_count": 6
+        },
+        "comparison": "partially_matched",
+        "severity": "low",
+        "confidence": 0.88,
+        "explanation": "Cookie access was directly observed, and the policy broadly discusses cookie or token identifiers. The policy does not specifically describe page-script cookie reads, and the telemetry does not reveal cookie values, ownership, persistence, or whether cookies were sent over the network."
+      },
+      {
+        "behavior": "browser_and_device_characteristics",
+        "category": "browser_characteristics",
+        "description": "The page accessed multiple browser and device characteristics that can support compatibility, security, analytics, or browser identification.",
+        "policy": {
+          "status": "broadly_disclosed",
+          "evidence": "The policy describes technical and operational details, device identifiers, unique identifiers tied to the browser or device, and other technical details necessary to operate and maintain the services.",
+          "section": "Personal Information We Collect"
+        },
+        "telemetry": {
+          "status": "observed",
+          "evidence": [
+            "Navigator.read-user-agent observed 38 times",
+            "Navigator.read-hardware-concurrency observed 1 time",
+            "Navigator.read-device-memory observed 1 time",
+            "Battery.read-status observed 1 time"
+          ],
+          "observation_count": 41
+        },
+        "comparison": "partially_matched",
+        "severity": "medium",
+        "confidence": 0.84,
+        "explanation": "The policy's technical and device-information language reasonably covers the general category, but it does not specifically identify user-agent, hardware-concurrency, device-memory, or battery-status reads. The combined signals establish a broad browser and device characteristic surface, not definitive fingerprinting."
+      },
+      {
+        "behavior": "third_party_requests",
+        "category": "third_party_requests",
+        "description": "The page made requests to Google-hosted resources, reCAPTCHA, Google Analytics, and Google Tag Manager.",
+        "policy": {
+          "status": "broadly_disclosed",
+          "evidence": "The policy describes processing by service providers and the use of third-party services enabled through SecOps Services, but does not enumerate the specific hosts observed during this visit.",
+          "section": "How We Share Your Information; Why We Process Your Information"
+        },
+        "telemetry": {
+          "status": "observed",
+          "evidence": [
+            "13 third-party requests were observed out of 23 total requests",
+            "www.gstatic.com received 5 requests",
+            "fonts.googleapis.com received 2 requests",
+            "fonts.gstatic.com received 2 requests",
+            "recaptcha.net received 2 requests",
+            "www.google-analytics.com received 1 request",
+            "www.googletagmanager.com received 1 request"
+          ],
+          "observation_count": 13
+        },
+        "comparison": "partially_matched",
+        "severity": "low",
+        "confidence": 0.82,
+        "explanation": "The policy broadly addresses service providers and third-party services, while the telemetry establishes communication with the listed hosts. The telemetry does not establish that personal information, identifiers, cookies, or request bodies were transmitted to those hosts."
+      },
+      {
+        "behavior": "browser_storage",
+        "category": "browser_storage",
+        "description": "The page registered a service worker and modified browser storage-related state during the visit.",
+        "policy": {
+          "status": "not_clearly_disclosed",
+          "evidence": "",
+          "section": ""
+        },
+        "telemetry": {
+          "status": "observed",
+          "evidence": [
+            "ServiceWorker.register observed 1 time",
+            "Storage.remove observed 1 time",
+            "The page reported 1 localStorage key",
+            "The page reported 2 sessionStorage keys",
+            "The page reported 1 IndexedDB database",
+            "The page reported 1 cache entry",
+            "The page was service-worker controlled"
+          ],
+          "observation_count": 2
+        },
+        "comparison": "observed_only",
+        "severity": "low",
+        "confidence": 0.78,
+        "explanation": "Veilance observed browser storage and service-worker activity, but the applicable policy does not clearly describe these specific mechanisms. The telemetry does not establish what values were stored, when existing state was created, or whether any stored data was transmitted externally."
+      },
+      {
+        "behavior": "advertising_tracker",
+        "category": "advertising",
+        "description": "A tracker classified by Veilance as advertising-related was observed during the visit.",
+        "policy": {
+          "status": "not_clearly_disclosed",
+          "evidence": "The policy discusses analytics and measurement but does not clearly describe advertising trackers or targeted advertising activity.",
+          "section": "Why We Process Your Information; U.S. State Privacy Law Requirements"
+        },
+        "telemetry": {
+          "status": "observed",
+          "evidence": [
+            "A Veilance advertising tracker associated with Google Tag was detected with 1 request",
+            "www.googletagmanager.com received 1 script request"
+          ],
+          "observation_count": 1
+        },
+        "comparison": "observed_only",
+        "severity": "medium",
+        "confidence": 0.79,
+        "explanation": "An advertising-classified tracker was directly detected, but the single request does not establish that advertising profiles were created, that personal information was transmitted, or that targeted advertising occurred. The policy's analytics language does not clearly disclose advertising-related tracking."
+      }
+    ],
+    "important_limitations": [
+      "This telemetry represents a 41-second browser observation. Absence of a behavior in this sample does not demonstrate that the behavior never occurs.",
+      "Veilance observed network destinations and browser activity but did not inspect request or response contents. Third-party communication does not by itself establish what personal information was transmitted.",
+      "Browser API access does not necessarily establish the purpose for which the accessed information was used.",
+      "Existing cookies, browser storage entries, IndexedDB databases, cache entries, or service-worker state may have existed before the current observation.",
+      "The observed battery-status access does not establish that battery values were transmitted or used for tracking.",
+      "The applicable policy is the current accessible SecOps Privacy Notice, effective February 6, 2025. Its broad technical-information disclosures may cover some VirusTotal operations without specifically naming every browser API or storage mechanism."
+    ]
+  }
+}

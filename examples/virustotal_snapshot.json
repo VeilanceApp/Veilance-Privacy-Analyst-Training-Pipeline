@@ -1,0 +1,214 @@
+{
+  "schemaVersion": "veilance.telemetry-snapshot.v2",
+  "eventId": "example-virustotal-0001",
+  "extensionVersion": "0.8.0",
+  "site": {
+    "hostname": "www.virustotal.com",
+    "https": true
+  },
+  "observation": {
+    "durationSeconds": 41,
+    "totalRequests": 23,
+    "firstPartyRequests": 10,
+    "thirdPartyRequests": 13
+  },
+  "thirdPartyHosts": [
+    {
+      "host": "www.gstatic.com",
+      "requests": 5,
+      "resourceTypes": {
+        "script": 5
+      }
+    },
+    {
+      "host": "fonts.googleapis.com",
+      "requests": 2,
+      "resourceTypes": {
+        "stylesheet": 2
+      }
+    },
+    {
+      "host": "fonts.gstatic.com",
+      "requests": 2,
+      "resourceTypes": {
+        "font": 2
+      }
+    },
+    {
+      "host": "recaptcha.net",
+      "requests": 2,
+      "resourceTypes": {
+        "script": 2
+      }
+    },
+    {
+      "host": "www.google-analytics.com",
+      "requests": 1,
+      "resourceTypes": {
+        "script": 1
+      }
+    },
+    {
+      "host": "www.googletagmanager.com",
+      "requests": 1,
+      "resourceTypes": {
+        "script": 1
+      }
+    }
+  ],
+  "trackers": [
+    {
+      "id": "google-analytics",
+      "category": "analytics",
+      "requests": 1
+    },
+    {
+      "id": "site-analytics",
+      "category": "analytics",
+      "requests": 1
+    },
+    {
+      "id": "google-tag",
+      "category": "advertising",
+      "requests": 1
+    },
+    {
+      "id": "tag-manager",
+      "category": "tag-manager",
+      "requests": 1
+    }
+  ],
+  "signals": [
+    {
+      "indicatorId": "navigator-characteristics",
+      "api": "Navigator",
+      "action": "read-user-agent",
+      "count": 38
+    },
+    {
+      "indicatorId": "cookie-access",
+      "api": "Cookie",
+      "action": "read",
+      "count": 6
+    },
+    {
+      "indicatorId": "device-sensors",
+      "api": "Battery",
+      "action": "read-status",
+      "count": 1
+    },
+    {
+      "indicatorId": "navigator-characteristics",
+      "api": "Navigator",
+      "action": "read-hardware-concurrency",
+      "count": 1
+    },
+    {
+      "indicatorId": "navigator-characteristics",
+      "api": "Navigator",
+      "action": "read-device-memory",
+      "count": 1
+    },
+    {
+      "indicatorId": "browser-storage",
+      "api": "ServiceWorker",
+      "action": "register",
+      "count": 1
+    },
+    {
+      "indicatorId": "browser-storage",
+      "api": "Storage",
+      "action": "remove",
+      "count": 1
+    }
+  ],
+  "page": {
+    "scriptCount": 18,
+    "thirdPartyScriptCount": 9,
+    "iframeCount": 1,
+    "thirdPartyIframeCount": 1,
+    "accessibleCookieCount": 0,
+    "localStorageKeyCount": 1,
+    "sessionStorageKeyCount": 2,
+    "indexedDbCount": 1,
+    "cacheCount": 1,
+    "serviceWorkerControlled": true
+  },
+  "security": {
+    "contentSecurityPolicy": true,
+    "strictTransportSecurity": true,
+    "permissionsPolicy": true,
+    "referrerPolicy": true,
+    "xFrameOptions": true,
+    "crossOriginOpenerPolicy": false,
+    "crossOriginResourcePolicy": false
+  },
+  "interest": {
+    "score": 52,
+    "level": "active",
+    "minimumScore": 20,
+    "eligible": true,
+    "reasons": [
+      {
+        "id": "known-tracker-infrastructure",
+        "severity": "medium",
+        "points": 20
+      },
+      {
+        "id": "browser-characteristics",
+        "severity": "low",
+        "points": 12
+      },
+      {
+        "id": "browser-storage",
+        "severity": "low",
+        "points": 10
+      },
+      {
+        "id": "third-party-surface",
+        "severity": "low",
+        "points": 10
+      }
+    ]
+  },
+  "redactedDocument": {
+    "format": "veilance.redacted-html.v1",
+    "html": "<!doctype html>\\n<html><head></head><body>[REDACTED TEXT]</body></html>",
+    "truncated": false,
+    "originalElementCount": 100,
+    "serializedChars": 68,
+    "redaction": {
+      "textNodesRedacted": 1,
+      "attributesRemoved": 0,
+      "urlsReduced": 0,
+      "privateUrlsRemoved": 0,
+      "inlineScriptsRedacted": 0,
+      "styleBlocksRedacted": 0,
+      "formControlsRedacted": 0,
+      "commentsRemoved": 0,
+      "opaqueNodesRedacted": 0,
+      "nodesOmitted": 0
+    },
+    "evidence": {
+      "resourceHosts": [],
+      "inlineScriptHints": {
+        "canvas": 0,
+        "webgl": 0,
+        "webgpu": 0,
+        "audio": 0,
+        "fonts": 0,
+        "navigator": 1,
+        "screen": 0,
+        "webrtc": 0,
+        "advertising": 1,
+        "antiBlocking": 0
+      },
+      "domMarkers": {
+        "advertising": 0,
+        "consent": 0,
+        "antiBlocking": 0,
+        "tracking": 0
+      }
+    }
+  }
+}
