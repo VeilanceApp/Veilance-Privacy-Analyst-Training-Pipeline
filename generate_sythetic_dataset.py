@@ -14,18 +14,6 @@ def load_json(path: Path) -> Any:
         return json.load(f)
 
 
-def write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(
-            data,
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
-
-
 def stable_hash(value: str) -> str:
     return hashlib.sha256(
         value.encode("utf-8")
@@ -45,65 +33,27 @@ def json_dumps_stable(value: Any) -> str:
     )
 
 
-# ---------------------------------------------------------------------------
-# Strict type handling
-# ---------------------------------------------------------------------------
-
-def is_strict_int(value: Any) -> bool:
-    """
-    Python bool is a subclass of int.
-
-    We explicitly reject bool here.
-    """
+def is_integer(value: Any) -> bool:
     return (
         isinstance(value, int)
         and not isinstance(value, bool)
     )
 
 
-def is_strict_float(value: Any) -> bool:
+def is_float(value: Any) -> bool:
     return isinstance(value, float)
 
 
 def is_number(value: Any) -> bool:
     return (
-        is_strict_int(value)
-        or is_strict_float(value)
+        is_integer(value)
+        or is_float(value)
     )
 
 
 def same_type(original: Any, mutated: Any) -> bool:
-    """
-    Enforce exact scalar type preservation.
-    """
-
-    if original is None:
-        return mutated is None
-
-    if isinstance(original, bool):
-        return isinstance(mutated, bool)
-
-    if is_strict_int(original):
-        return is_strict_int(mutated)
-
-    if is_strict_float(original):
-        return is_strict_float(mutated)
-
-    if isinstance(original, str):
-        return isinstance(mutated, str)
-
-    if isinstance(original, list):
-        return isinstance(mutated, list)
-
-    if isinstance(original, dict):
-        return isinstance(mutated, dict)
-
     return type(original) is type(mutated)
 
-
-# ---------------------------------------------------------------------------
-# Input loading
-# ---------------------------------------------------------------------------
 
 def iter_json_file(path: Path) -> Iterable[dict]:
     data = load_json(path)
@@ -113,22 +63,24 @@ def iter_json_file(path: Path) -> Iterable[dict]:
         return
 
     if isinstance(data, list):
-        for idx, item in enumerate(data):
+        for index, item in enumerate(data):
             if not isinstance(item, dict):
                 raise ValueError(
-                    f"{path}: list element {idx} is not an object"
+                    f"{path}: list element {index} is not an object"
                 )
+
             yield item
+
         return
 
     raise ValueError(
-        f"{path}: top-level JSON must be object or array"
+        f"{path}: top-level JSON must be an object or array"
     )
 
 
 def iter_jsonl_file(path: Path) -> Iterable[dict]:
     with path.open("r", encoding="utf-8") as f:
-        for line_no, line in enumerate(f, 1):
+        for line_number, line in enumerate(f, 1):
             line = line.strip()
 
             if not line:
@@ -136,14 +88,15 @@ def iter_jsonl_file(path: Path) -> Iterable[dict]:
 
             try:
                 item = json.loads(line)
+
             except json.JSONDecodeError as exc:
                 raise ValueError(
-                    f"{path}:{line_no}: invalid JSON: {exc}"
+                    f"{path}:{line_number}: invalid JSON: {exc}"
                 ) from exc
 
             if not isinstance(item, dict):
                 raise ValueError(
-                    f"{path}:{line_no}: row must be an object"
+                    f"{path}:{line_number}: row must be an object"
                 )
 
             yield item
@@ -151,7 +104,10 @@ def iter_jsonl_file(path: Path) -> Iterable[dict]:
 
 def collect_input_files(path: Path) -> List[Path]:
     if path.is_file():
-        if path.suffix.lower() not in {".json", ".jsonl"}:
+        if path.suffix.lower() not in {
+            ".json",
+            ".jsonl",
+        }:
             raise ValueError(
                 "Input file must be .json or .jsonl"
             )
@@ -159,14 +115,15 @@ def collect_input_files(path: Path) -> List[Path]:
         return [path]
 
     if path.is_dir():
-        files = sorted(
-            p
-            for p in path.rglob("*")
-            if p.is_file()
-            and p.suffix.lower() in {".json", ".jsonl"}
+        return sorted(
+            file
+            for file in path.rglob("*")
+            if file.is_file()
+            and file.suffix.lower() in {
+                ".json",
+                ".jsonl",
+            }
         )
-
-        return files
 
     raise ValueError(
         f"Input path does not exist: {path}"
@@ -178,429 +135,21 @@ def load_records(path: Path) -> List[dict]:
 
     for file in collect_input_files(path):
         if file.suffix.lower() == ".jsonl":
-            records.extend(iter_jsonl_file(file))
+            records.extend(
+                iter_jsonl_file(file)
+            )
+
         else:
-            records.extend(iter_json_file(file))
+            records.extend(
+                iter_json_file(file)
+            )
 
     return records
 
 
-# ---------------------------------------------------------------------------
-# Dot-path resolution
-# ---------------------------------------------------------------------------
-
 def split_path(path: str) -> List[str]:
     return path.split(".")
 
-
-def find_matching_nodes(
-    root: Any,
-    path: str,
-) -> List[Tuple[Any, Any, Any]]:
-    """
-    Resolve paths like:
-
-        telemetry.observation.durationSeconds
-        telemetry.signals.*.count
-        expected.findings.*.confidence
-
-    Returns tuples:
-        (parent, key_or_index, current_value)
-
-    No values are changed here.
-    """
-
-    parts = split_path(path)
-    results = []
-
-    def walk(
-        current: Any,
-        parent: Any,
-        parent_key: Any,
-        remaining: List[str],
-    ) -> None:
-        if not remaining:
-            results.append(
-                (parent, parent_key, current)
-            )
-            return
-
-        token = remaining[0]
-        rest = remaining[1:]
-
-        if token == "*":
-            if isinstance(current, list):
-                for idx, item in enumerate(current):
-                    walk(
-                        item,
-                        current,
-                        idx,
-                        rest,
-                    )
-
-            elif isinstance(current, dict):
-                for key, item in current.items():
-                    walk(
-                        item,
-                        current,
-                        key,
-                        rest,
-                    )
-
-            return
-
-        if isinstance(current, dict):
-            if token in current:
-                walk(
-                    current[token],
-                    current,
-                    token,
-                    rest,
-                )
-
-    walk(
-        root,
-        None,
-        None,
-        parts,
-    )
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Mutations
-# ---------------------------------------------------------------------------
-
-def mutate_integer(
-    value: int,
-    rule: dict,
-    rng: random.Random,
-) -> int:
-    """
-    Always returns int.
-    Never converts to float.
-    """
-
-    strategy = rule.get("strategy")
-
-    if strategy == "jitter":
-        spread = rule.get("spread", 0.25)
-
-        if not isinstance(spread, (int, float)):
-            raise ValueError(
-                "jitter spread must be numeric in config"
-            )
-
-        minimum = rule.get("min")
-        maximum = rule.get("max")
-
-        delta = max(
-            1,
-            round(abs(value) * spread),
-        )
-
-        low = value - delta
-        high = value + delta
-
-        if is_strict_int(minimum):
-            low = max(
-                low,
-                minimum,
-            )
-
-        if is_strict_int(maximum):
-            high = min(
-                high,
-                maximum,
-            )
-
-        if high < low:
-            return value
-
-        return rng.randint(
-            low,
-            high,
-        )
-
-    if strategy == "choice":
-        values = rule.get("values", [])
-
-        compatible = [
-            v
-            for v in values
-            if is_strict_int(v)
-        ]
-
-        if not compatible:
-            return value
-
-        return rng.choice(compatible)
-
-    return value
-
-
-def mutate_float(
-    value: float,
-    rule: dict,
-    rng: random.Random,
-) -> float:
-    """
-    Always returns float.
-    """
-
-    strategy = rule.get("strategy")
-
-    if strategy == "jitter":
-        spread = rule.get("spread", 0.05)
-
-        if not isinstance(spread, (int, float)):
-            raise ValueError(
-                "jitter spread must be numeric in config"
-            )
-
-        result = (
-            value
-            + rng.uniform(
-                -float(spread),
-                float(spread),
-            )
-        )
-
-        minimum = rule.get("min")
-        maximum = rule.get("max")
-
-        if is_number(minimum):
-            result = max(
-                result,
-                minimum,
-            )
-
-        if is_number(maximum):
-            result = min(
-                result,
-                maximum,
-            )
-
-        precision = rule.get("precision")
-
-        if is_strict_int(precision):
-            result = round(
-                result,
-                precision,
-            )
-
-        return float(result)
-
-    if strategy == "choice":
-        values = rule.get("values", [])
-
-        compatible = [
-            v
-            for v in values
-            if is_strict_float(v)
-        ]
-
-        if not compatible:
-            return value
-
-        return rng.choice(compatible)
-
-    return value
-
-
-def mutate_string(
-    value: str,
-    rule: dict,
-    rng: random.Random,
-) -> str:
-    strategy = rule.get("strategy")
-
-    if strategy == "choice":
-        values = rule.get("values", [])
-
-        compatible = [
-            v
-            for v in values
-            if isinstance(v, str)
-        ]
-
-        if not compatible:
-            return value
-
-        return rng.choice(compatible)
-
-    if strategy == "template":
-        templates = rule.get("templates", [])
-
-        compatible = [
-            v
-            for v in templates
-            if isinstance(v, str)
-        ]
-
-        if not compatible:
-            return value
-
-        template = rng.choice(compatible)
-
-        return template.replace(
-            "{original}",
-            value,
-        )
-
-    return value
-
-
-def mutate_value(
-    value: Any,
-    rule: dict,
-    rng: random.Random,
-) -> Any:
-    """
-    Mutates based entirely on original runtime type.
-
-    No implicit coercion is performed.
-    """
-
-    if value is None:
-        return None
-
-    if isinstance(value, bool):
-        strategy = rule.get("strategy")
-
-        if strategy == "choice":
-            values = rule.get("values", [])
-
-            compatible = [
-                v
-                for v in values
-                if isinstance(v, bool)
-            ]
-
-            if compatible:
-                return rng.choice(compatible)
-
-        return value
-
-    if is_strict_int(value):
-        return mutate_integer(
-            value,
-            rule,
-            rng,
-        )
-
-    if is_strict_float(value):
-        return mutate_float(
-            value,
-            rule,
-            rng,
-        )
-
-    if isinstance(value, str):
-        return mutate_string(
-            value,
-            rule,
-            rng,
-        )
-
-    return value
-
-
-def apply_mutation_rule(
-    root: dict,
-    path: str,
-    rule: dict,
-    rng: random.Random,
-) -> int:
-    nodes = find_matching_nodes(
-        root,
-        path,
-    )
-
-    changed = 0
-
-    probability = rule.get(
-        "probability",
-        1.0,
-    )
-
-    if not isinstance(
-        probability,
-        (int, float),
-    ):
-        raise ValueError(
-            f"{path}: probability must be numeric"
-        )
-
-    for parent, key, current in nodes:
-        if parent is None:
-            continue
-
-        if rng.random() > probability:
-            continue
-
-        mutated = mutate_value(
-            current,
-            rule,
-            rng,
-        )
-
-        if not same_type(
-            current,
-            mutated,
-        ):
-            raise TypeError(
-                f"Mutation rule changed type at {path}: "
-                f"{type(current).__name__} -> "
-                f"{type(mutated).__name__}"
-            )
-
-        parent[key] = mutated
-
-        if mutated != current:
-            changed += 1
-
-    return changed
-
-
-def apply_mutation_rules(
-    row: dict,
-    rules: dict,
-    rng: random.Random,
-) -> int:
-    count = 0
-
-    mutations = rules.get(
-        "mutations",
-        {},
-    )
-
-    if not isinstance(
-        mutations,
-        dict,
-    ):
-        raise ValueError(
-            "mutation_rules.json mutations must be an object"
-        )
-
-    for path, rule in mutations.items():
-        if not isinstance(rule, dict):
-            continue
-
-        count += apply_mutation_rule(
-            row,
-            path,
-            rule,
-            rng,
-        )
-
-    return count
-
-
-# ---------------------------------------------------------------------------
-# Report shape handling
-# ---------------------------------------------------------------------------
 
 def get_path(
     obj: Any,
@@ -647,10 +196,455 @@ def set_path(
     current[parts[-1]] = value
 
 
+def find_matching_nodes(
+    root: Any,
+    path: str,
+) -> List[Tuple[Any, Any, Any]]:
+    """
+    Supports paths such as:
+
+        telemetry.observation.durationSeconds
+        telemetry.signals.*.count
+        expected.findings.*.confidence
+
+    Returns:
+        (parent, key/index, value)
+    """
+
+    parts = split_path(path)
+    results = []
+
+    def walk(
+        current: Any,
+        parent: Any,
+        parent_key: Any,
+        remaining: List[str],
+    ) -> None:
+
+        if not remaining:
+            results.append(
+                (
+                    parent,
+                    parent_key,
+                    current,
+                )
+            )
+            return
+
+        token = remaining[0]
+        rest = remaining[1:]
+
+        if token == "*":
+            if isinstance(current, list):
+                for index, item in enumerate(current):
+                    walk(
+                        item,
+                        current,
+                        index,
+                        rest,
+                    )
+
+            elif isinstance(current, dict):
+                for key, item in current.items():
+                    walk(
+                        item,
+                        current,
+                        key,
+                        rest,
+                    )
+
+            return
+
+        if (
+            isinstance(current, dict)
+            and token in current
+        ):
+            walk(
+                current[token],
+                current,
+                token,
+                rest,
+            )
+
+    walk(
+        root,
+        None,
+        None,
+        parts,
+    )
+
+    return results
+
+
+def mutate_integer(
+    value: int,
+    rule: dict,
+    rng: random.Random,
+) -> int:
+
+    strategy = rule.get("strategy")
+
+    if strategy == "jitter":
+        spread = rule.get(
+            "spread",
+            0.25,
+        )
+
+        if not is_number(spread):
+            raise ValueError(
+                "Integer jitter spread must be numeric"
+            )
+
+        minimum = rule.get("min")
+        maximum = rule.get("max")
+
+        delta = max(
+            1,
+            round(
+                abs(value) * spread
+            ),
+        )
+
+        low = value - delta
+        high = value + delta
+
+        if is_integer(minimum):
+            low = max(
+                low,
+                minimum,
+            )
+
+        if is_integer(maximum):
+            high = min(
+                high,
+                maximum,
+            )
+
+        if high < low:
+            return value
+
+        return rng.randint(
+            low,
+            high,
+        )
+
+    if strategy == "choice":
+        values = rule.get(
+            "values",
+            [],
+        )
+
+        compatible = [
+            candidate
+            for candidate in values
+            if type(candidate) is type(value)
+        ]
+
+        if compatible:
+            return rng.choice(
+                compatible
+            )
+
+    return value
+
+
+def mutate_float(
+    value: float,
+    rule: dict,
+    rng: random.Random,
+) -> float:
+
+    strategy = rule.get("strategy")
+
+    if strategy == "jitter":
+        spread = rule.get(
+            "spread",
+            0.05,
+        )
+
+        if not is_number(spread):
+            raise ValueError(
+                "Float jitter spread must be numeric"
+            )
+
+        result = (
+            value
+            + rng.uniform(
+                -spread,
+                spread,
+            )
+        )
+
+        minimum = rule.get("min")
+        maximum = rule.get("max")
+
+        if is_number(minimum):
+            result = max(
+                result,
+                minimum,
+            )
+
+        if is_number(maximum):
+            result = min(
+                result,
+                maximum,
+            )
+
+        precision = rule.get(
+            "precision"
+        )
+
+        if is_integer(precision):
+            result = round(
+                result,
+                precision,
+            )
+
+        return result
+
+    if strategy == "choice":
+        values = rule.get(
+            "values",
+            [],
+        )
+
+        compatible = [
+            candidate
+            for candidate in values
+            if type(candidate) is type(value)
+        ]
+
+        if compatible:
+            return rng.choice(
+                compatible
+            )
+
+    return value
+
+
+def mutate_string(
+    value: str,
+    rule: dict,
+    rng: random.Random,
+) -> str:
+
+    strategy = rule.get(
+        "strategy"
+    )
+
+    if strategy == "choice":
+        values = rule.get(
+            "values",
+            [],
+        )
+
+        compatible = [
+            candidate
+            for candidate in values
+            if isinstance(
+                candidate,
+                str,
+            )
+        ]
+
+        if compatible:
+            return rng.choice(
+                compatible
+            )
+
+    if strategy == "template":
+        templates = rule.get(
+            "templates",
+            [],
+        )
+
+        compatible = [
+            template
+            for template in templates
+            if isinstance(
+                template,
+                str,
+            )
+        ]
+
+        if compatible:
+            return rng.choice(
+                compatible
+            ).replace(
+                "{original}",
+                value,
+            )
+
+    return value
+
+
+def mutate_value(
+    value: Any,
+    rule: dict,
+    rng: random.Random,
+) -> Any:
+
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        if rule.get("strategy") == "choice":
+            values = rule.get(
+                "values",
+                [],
+            )
+
+            compatible = [
+                candidate
+                for candidate in values
+                if type(candidate) is type(value)
+            ]
+
+            if compatible:
+                return rng.choice(
+                    compatible
+                )
+
+        return value
+
+    if is_integer(value):
+        return mutate_integer(
+            value,
+            rule,
+            rng,
+        )
+
+    if is_float(value):
+        return mutate_float(
+            value,
+            rule,
+            rng,
+        )
+
+    if isinstance(value, str):
+        return mutate_string(
+            value,
+            rule,
+            rng,
+        )
+
+    return value
+
+
+def apply_mutation_rule(
+    root: dict,
+    path: str,
+    rule: dict,
+    rng: random.Random,
+) -> int:
+
+    nodes = find_matching_nodes(
+        root,
+        path,
+    )
+
+    probability = rule.get(
+        "probability",
+        1.0,
+    )
+
+    if not is_number(probability):
+        raise ValueError(
+            f"{path}: probability must be numeric"
+        )
+
+    changed = 0
+
+    for parent, key, current in nodes:
+        if parent is None:
+            continue
+
+        if rng.random() > probability:
+            continue
+
+        mutated = mutate_value(
+            current,
+            rule,
+            rng,
+        )
+
+        if not same_type(
+            current,
+            mutated,
+        ):
+            raise TypeError(
+                f"Mutation changed type at {path}: "
+                f"{type(current).__name__} -> "
+                f"{type(mutated).__name__}"
+            )
+
+        if mutated != current:
+            parent[key] = mutated
+            changed += 1
+
+    return changed
+
+
+def apply_mutation_rules(
+    row: dict,
+    rules: dict,
+    rng: random.Random,
+) -> int:
+
+    mutations = rules.get(
+        "mutations",
+        {},
+    )
+
+    if not isinstance(
+        mutations,
+        dict,
+    ):
+        raise ValueError(
+            "mutation_rules.json mutations must be an object"
+        )
+
+    changed = 0
+
+    for path, rule in mutations.items():
+        if not isinstance(
+            rule,
+            dict,
+        ):
+            continue
+
+        changed += apply_mutation_rule(
+            row,
+            path,
+            rule,
+            rng,
+        )
+
+    return changed
+
+
+def path_exists(
+    obj: Any,
+    path: str,
+) -> bool:
+
+    sentinel = object()
+
+    return (
+        get_path(
+            obj,
+            path,
+            sentinel,
+        )
+        is not sentinel
+    )
+
+
 def detect_record_mode(
     record: dict,
     config: dict,
 ) -> str:
+
     shapes = config.get(
         "record_shapes",
         {},
@@ -663,42 +657,273 @@ def detect_record_mode(
         )
 
         if all(
-            get_path(
+            path_exists(
                 record,
                 field,
-                default=object(),
             )
-            is not None
             for field in required
         ):
-            missing = [
-                field
-                for field in required
-                if get_path(
-                    record,
-                    field,
-                    default=None,
-                )
-                is None
-            ]
-
-            if not missing:
-                return name
+            return name
 
     raise ValueError(
         "Record did not match any configured record shape"
     )
 
 
-# ---------------------------------------------------------------------------
-# Synthetic domain handling
-# ---------------------------------------------------------------------------
+def report_from_record(
+    record: dict,
+    mode: str,
+    config: dict,
+) -> Optional[dict]:
+
+    shape = get_path(
+        config,
+        f"record_shapes.{mode}",
+        {},
+    )
+
+    kind = shape.get(
+        "kind"
+    )
+
+    if kind == "standalone_report":
+        return record
+
+    if kind == "training_row":
+        expected_path = get_path(
+            config,
+            "paths.expected",
+            "expected",
+        )
+
+        expected = get_path(
+            record,
+            expected_path,
+        )
+
+        if isinstance(
+            expected,
+            dict,
+        ):
+            return expected
+
+    return None
+
+
+def generation_cap(
+    source_count: int,
+    config: dict,
+) -> int:
+    """
+    The more independent real source records we have,
+    the fewer descendants we need from each family.
+
+    Values may be overridden in generator_config.json.
+    """
+
+    generation = config.get(
+        "generation",
+        {},
+    )
+
+    caps = generation.get(
+        "source_count_caps",
+        {},
+    )
+
+    if source_count <= 1:
+        return caps.get(
+            "single",
+            500,
+        )
+
+    if source_count <= 10:
+        return caps.get(
+            "up_to_10",
+            400,
+        )
+
+    if source_count <= 25:
+        return caps.get(
+            "up_to_25",
+            300,
+        )
+
+    if source_count <= 100:
+        return caps.get(
+            "up_to_100",
+            200,
+        )
+
+    return caps.get(
+        "over_100",
+        150,
+    )
+
+
+def automatic_variant_count(
+    record: dict,
+    mode: str,
+    source_count: int,
+    config: dict,
+) -> int:
+    """
+    Estimate a useful amount of synthetic data based on
+    semantic richness rather than an arbitrary fixed count.
+
+    A report with ~4 meaningful findings normally lands
+    around 300-400 variants when it is the only source.
+    """
+
+    generation = config.get(
+        "generation",
+        {},
+    )
+
+    minimum = generation.get(
+        "minimum_per_source",
+        75,
+    )
+
+    maximum = generation_cap(
+        source_count,
+        config,
+    )
+
+    report = report_from_record(
+        record,
+        mode,
+        config,
+    )
+
+    if not isinstance(
+        report,
+        dict,
+    ):
+        return minimum
+
+    findings_path = get_path(
+        config,
+        "paths.findings",
+        "findings",
+    )
+
+    findings = get_path(
+        report,
+        findings_path,
+        [],
+    )
+
+    if not isinstance(
+        findings,
+        list,
+    ):
+        return minimum
+
+    valid_findings = [
+        finding
+        for finding in findings
+        if isinstance(
+            finding,
+            dict,
+        )
+    ]
+
+    categories = {
+        finding.get("category")
+        for finding in valid_findings
+        if isinstance(
+            finding.get("category"),
+            str,
+        )
+        and finding.get("category")
+    }
+
+    comparisons = {
+        finding.get("comparison")
+        for finding in valid_findings
+        if isinstance(
+            finding.get("comparison"),
+            str,
+        )
+        and finding.get("comparison")
+    }
+
+    policy_evidence_count = 0
+    telemetry_evidence_count = 0
+
+    for finding in valid_findings:
+        policy = finding.get(
+            "policy",
+            {},
+        )
+
+        if isinstance(
+            policy,
+            dict,
+        ):
+            evidence = policy.get(
+                "evidence"
+            )
+
+            if (
+                isinstance(
+                    evidence,
+                    str,
+                )
+                and evidence
+            ):
+                policy_evidence_count += 1
+
+        telemetry = finding.get(
+            "telemetry",
+            {},
+        )
+
+        if isinstance(
+            telemetry,
+            dict,
+        ):
+            evidence = telemetry.get(
+                "evidence",
+                [],
+            )
+
+            if isinstance(
+                evidence,
+                list,
+            ):
+                telemetry_evidence_count += len(
+                    evidence
+                )
+
+    target = (
+        50
+        + len(valid_findings) * 50
+        + len(categories) * 20
+        + len(comparisons) * 15
+        + policy_evidence_count * 5
+        + min(
+            telemetry_evidence_count,
+            20,
+        )
+    )
+
+    if target < minimum:
+        return minimum
+
+    if target > maximum:
+        return maximum
+
+    return target
+
 
 def synthetic_domain(
     source_domain: str,
     variant_index: int,
-    seed: int,
+    seed: str,
 ) -> str:
+
     token = stable_hash(
         f"{source_domain}:{variant_index}:{seed}"
     )
@@ -713,10 +938,6 @@ def replace_domain_recursive(
     old_domain: str,
     new_domain: str,
 ) -> Any:
-    """
-    Strings remain strings.
-    All other types are preserved.
-    """
 
     if isinstance(value, str):
         result = value
@@ -769,20 +990,17 @@ def replace_domain_recursive(
     return value
 
 
-# ---------------------------------------------------------------------------
-# Comparison mutation
-# ---------------------------------------------------------------------------
-
 def policy_text_for_comparison(
     category: str,
     comparison: str,
     config: dict,
     rng: random.Random,
 ) -> str:
+
     templates = get_path(
         config,
         "synthetic_policy_templates",
-        default={},
+        {},
     )
 
     choices = templates.get(
@@ -793,17 +1011,18 @@ def policy_text_for_comparison(
     choices = [
         item
         for item in choices
-        if isinstance(item, str)
+        if isinstance(
+            item,
+            str,
+        )
     ]
 
     if not choices:
         return ""
 
-    template = rng.choice(
+    return rng.choice(
         choices
-    )
-
-    return template.replace(
+    ).replace(
         "{category}",
         category,
     )
@@ -814,6 +1033,7 @@ def mutate_finding_comparison(
     config: dict,
     rng: random.Random,
 ) -> dict:
+
     output = deep_copy(
         finding
     )
@@ -828,7 +1048,10 @@ def mutate_finding_comparison(
         [],
     )
 
-    if not allowed:
+    if not isinstance(
+        allowed,
+        list,
+    ) or not allowed:
         return output
 
     probability = comparison_config.get(
@@ -836,29 +1059,74 @@ def mutate_finding_comparison(
         0.35,
     )
 
+    if not is_number(probability):
+        raise ValueError(
+            "counterfactual_probability must be numeric"
+        )
+
     if rng.random() >= probability:
         return output
-
-    target = rng.choice(
-        allowed
-    )
 
     current = output.get(
         "comparison"
     )
 
-    if target == current:
+    candidates = [
+        candidate
+        for candidate in allowed
+        if isinstance(
+            candidate,
+            str,
+        )
+        and candidate != current
+    ]
+
+    if not candidates:
         return output
+
+    target = rng.choice(
+        candidates
+    )
 
     output["comparison"] = target
 
     category = output.get(
-        "category",
-        output.get(
-            "behavior",
-            "behavior",
-        ),
+        "category"
     )
+
+    if not isinstance(
+        category,
+        str,
+    ) or not category:
+        category = output.get(
+            "behavior"
+        )
+
+    if not isinstance(
+        category,
+        str,
+    ) or not category:
+        category = "behavior"
+
+    policy = output.get(
+        "policy"
+    )
+
+    if not isinstance(
+        policy,
+        dict,
+    ):
+        return output
+
+    telemetry = output.get(
+        "telemetry"
+    )
+
+    if not isinstance(
+        telemetry,
+        dict,
+    ):
+        return output
 
     mappings = comparison_config.get(
         "policy_status_by_comparison",
@@ -869,24 +1137,19 @@ def mutate_finding_comparison(
         target
     )
 
-    policy = output.get(
-        "policy"
-    )
-
-    if not isinstance(
-        policy,
-        dict,
-    ):
-        policy = {}
-        output["policy"] = policy
-
-    if isinstance(
-        status,
-        str,
+    if (
+        isinstance(
+            status,
+            str,
+        )
+        and isinstance(
+            policy.get("status"),
+            str,
+        )
     ):
         policy["status"] = status
 
-    new_policy_text = policy_text_for_comparison(
+    policy_text = policy_text_for_comparison(
         category,
         target,
         config,
@@ -894,54 +1157,63 @@ def mutate_finding_comparison(
     )
 
     if target == "indeterminate":
-        policy["evidence"] = ""
-        policy["section"] = ""
+        if isinstance(
+            policy.get("evidence"),
+            str,
+        ):
+            policy["evidence"] = ""
 
-    elif new_policy_text:
-        policy["evidence"] = new_policy_text
-        policy["section"] = (
-            "Synthetic Privacy Statement"
-        )
+        if isinstance(
+            policy.get("section"),
+            str,
+        ):
+            policy["section"] = ""
 
-    telemetry = output.get(
-        "telemetry"
-    )
+    elif policy_text:
+        if isinstance(
+            policy.get("evidence"),
+            str,
+        ):
+            policy["evidence"] = policy_text
 
-    if not isinstance(
-        telemetry,
-        dict,
-    ):
-        telemetry = {}
-        output["telemetry"] = telemetry
+        if isinstance(
+            policy.get("section"),
+            str,
+        ):
+            policy["section"] = (
+                "Synthetic Privacy Statement"
+            )
 
     if target == "policy_only":
-        telemetry["status"] = (
-            "not_observed"
+        if isinstance(
+            telemetry.get("status"),
+            str,
+        ):
+            telemetry["status"] = (
+                "not_observed"
+            )
+
+        if isinstance(
+            telemetry.get("evidence"),
+            list,
+        ):
+            telemetry["evidence"] = []
+
+        observation_count = telemetry.get(
+            "observation_count"
         )
 
-        if (
-            "observation_count"
-            in telemetry
+        if is_integer(
+            observation_count
         ):
             telemetry[
                 "observation_count"
-            ] = None
-
-        telemetry["evidence"] = [
-            (
-                f"No {category} activity was "
-                f"observed during this synthetic visit."
-            )
-        ]
+            ] = 0
 
     else:
-        if (
-            "status"
-            in telemetry
-            and isinstance(
-                telemetry["status"],
-                str,
-            )
+        if isinstance(
+            telemetry.get("status"),
+            str,
         ):
             telemetry["status"] = (
                 "observed"
@@ -956,9 +1228,15 @@ def mutate_finding_comparison(
         target
     )
 
-    if isinstance(
-        severity,
-        str,
+    if (
+        isinstance(
+            severity,
+            str,
+        )
+        and isinstance(
+            output.get("severity"),
+            str,
+        )
     ):
         output["severity"] = severity
 
@@ -973,12 +1251,21 @@ def mutate_finding_comparison(
     )
 
     templates = [
-        t
-        for t in templates
-        if isinstance(t, str)
+        template
+        for template in templates
+        if isinstance(
+            template,
+            str,
+        )
     ]
 
-    if templates:
+    if (
+        templates
+        and isinstance(
+            output.get("explanation"),
+            str,
+        )
+    ):
         output["explanation"] = (
             rng.choice(
                 templates
@@ -991,26 +1278,30 @@ def mutate_finding_comparison(
     return output
 
 
-# ---------------------------------------------------------------------------
-# Report recalculation
-# ---------------------------------------------------------------------------
-
 def recompute_counts(
     findings: list,
     config: dict,
 ) -> dict:
+
     mapping = get_path(
         config,
         "analysis.count_fields",
-        default={},
+        {},
     )
 
-    result = {}
-
-    for output_field in mapping.values():
-        result[output_field] = 0
+    result = {
+        output_field: 0
+        for output_field
+        in mapping.values()
+    }
 
     for finding in findings:
+        if not isinstance(
+            finding,
+            dict,
+        ):
+            continue
+
         comparison = finding.get(
             "comparison"
         )
@@ -1028,19 +1319,22 @@ def recompute_counts(
 def recompute_confidence(
     findings: list,
 ) -> Optional[float]:
-    values = []
 
-    for finding in findings:
-        confidence = finding.get(
+    values = [
+        finding.get(
             "confidence"
         )
-
-        if is_strict_float(
-            confidence
-        ):
-            values.append(
-                confidence
+        for finding in findings
+        if isinstance(
+            finding,
+            dict,
+        )
+        and is_float(
+            finding.get(
+                "confidence"
             )
+        )
+    ]
 
     if not values:
         return None
@@ -1055,18 +1349,17 @@ def build_summary(
     findings: list,
     config: dict,
 ) -> str:
+
     counts = recompute_counts(
         findings,
         config,
     )
 
-    segments = []
-
-    for key, value in counts.items():
-        if value:
-            segments.append(
-                f"{value} {key.replace('_', ' ')}"
-            )
+    segments = [
+        f"{value} {key.replace('_', ' ')}"
+        for key, value in counts.items()
+        if value
+    ]
 
     if not segments:
         return (
@@ -1081,429 +1374,56 @@ def build_summary(
     )
 
 
-# ---------------------------------------------------------------------------
-# Policy reconstruction
-# ---------------------------------------------------------------------------
-
-def reconstruct_policy_document(
+def mutate_report(
     report: dict,
-    config: dict,
-) -> dict:
-    paths = config.get(
-        "paths",
-        {},
-    )
-
-    findings_path = paths.get(
-        "findings",
-        "findings",
-    )
-
-    findings = get_path(
-        report,
-        findings_path,
-        default=[],
-    )
-
-    sections = []
-    seen = set()
-
-    if isinstance(
-        findings,
-        list,
-    ):
-        for finding in findings:
-            if not isinstance(
-                finding,
-                dict,
-            ):
-                continue
-
-            policy = finding.get(
-                "policy",
-                {},
-            )
-
-            if not isinstance(
-                policy,
-                dict,
-            ):
-                continue
-
-            evidence = policy.get(
-                "evidence",
-                "",
-            )
-
-            section = policy.get(
-                "section",
-                "",
-            )
-
-            if (
-                not isinstance(
-                    evidence,
-                    str,
-                )
-                or not evidence
-            ):
-                continue
-
-            if not isinstance(
-                section,
-                str,
-            ):
-                section = ""
-
-            key = (
-                section,
-                evidence,
-            )
-
-            if key in seen:
-                continue
-
-            seen.add(key)
-
-            sections.append({
-                "heading": (
-                    section
-                    or "Privacy Policy"
-                ),
-                "text": evidence,
-            })
-
-    privacy_policy_path = paths.get(
-        "privacy_policy",
-        "privacy_policy",
-    )
-
-    privacy_policy = get_path(
-        report,
-        privacy_policy_path,
-        default={},
-    )
-
-    if not isinstance(
-        privacy_policy,
-        dict,
-    ):
-        privacy_policy = {}
-
-    return {
-        "url": privacy_policy.get(
-            "url",
-            "",
-        ),
-        "found": privacy_policy.get(
-            "found",
-            True,
-        ),
-        "applicable": privacy_policy.get(
-            "applicable",
-            True,
-        ),
-        "complete": True,
-        "sections": sections,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Standalone report conversion
-# ---------------------------------------------------------------------------
-
-API_EVIDENCE_PATTERN = re.compile(
-    r"^([A-Za-z0-9_]+)\.([A-Za-z0-9_-]+)"
-    r"\s+observed\s+(\d+)\s+time"
-)
-
-
-def signal_from_evidence(
-    evidence: str,
-) -> Optional[dict]:
-    if not isinstance(
-        evidence,
-        str,
-    ):
-        return None
-
-    match = API_EVIDENCE_PATTERN.search(
-        evidence.strip()
-    )
-
-    if not match:
-        return None
-
-    api = match.group(1)
-    action = match.group(2)
-    count_text = match.group(3)
-
-    # This is parsing source text, not coercing
-    # an existing JSON field.
-    #
-    # The evidence string intrinsically encodes an integer.
-    count = int(
-        count_text
-    )
-
-    return {
-        "indicatorId": (
-            f"synthetic-{api.lower()}-{action}"
-        ),
-        "api": api,
-        "action": action,
-        "count": count,
-    }
-
-
-def standalone_report_to_training_row(
-    report: dict,
-    config: dict,
-) -> dict:
-    paths = config.get(
-        "paths",
-        {},
-    )
-
-    domain_path = paths.get(
-        "domain",
-        "domain",
-    )
-
-    domain = get_path(
-        report,
-        domain_path,
-        default="https://synthetic.example",
-    )
-
-    if not isinstance(
-        domain,
-        str,
-    ):
-        raise ValueError(
-            "Configured report domain must be a string"
-        )
-
-    findings_path = paths.get(
-        "findings",
-        "findings",
-    )
-
-    findings = get_path(
-        report,
-        findings_path,
-        default=[],
-    )
-
-    signals = []
-
-    if isinstance(
-        findings,
-        list,
-    ):
-        for finding in findings:
-            if not isinstance(
-                finding,
-                dict,
-            ):
-                continue
-
-            telemetry = finding.get(
-                "telemetry",
-                {},
-            )
-
-            if not isinstance(
-                telemetry,
-                dict,
-            ):
-                continue
-
-            evidence_items = telemetry.get(
-                "evidence",
-                [],
-            )
-
-            if not isinstance(
-                evidence_items,
-                list,
-            ):
-                continue
-
-            for evidence in evidence_items:
-                signal = signal_from_evidence(
-                    evidence
-                )
-
-                if signal:
-                    signals.append(
-                        signal
-                    )
-
-    visit_path = paths.get(
-        "visit",
-        "visit",
-    )
-
-    visit = get_path(
-        report,
-        visit_path,
-        default={},
-    )
-
-    if not isinstance(
-        visit,
-        dict,
-    ):
-        visit = {}
-
-    duration = visit.get(
-        "duration_seconds"
-    )
-
-    telemetry = {
-        "schemaVersion": config.get(
-            "default_telemetry_schema",
-            "veilance.telemetry-snapshot.v2",
-        ),
-        "eventId": (
-            "synthetic-"
-            + stable_hash(
-                json_dumps_stable(
-                    report
-                )
-            )
-        ),
-        "extensionVersion": "synthetic",
-        "site": {
-            "hostname": re.sub(
-                r"^https?://",
-                "",
-                domain,
-            ).split("/")[0],
-            "https": domain.startswith(
-                "https://"
-            ),
-        },
-        "observation": {
-            "observedAt": visit.get(
-                "observed_at"
-            ),
-            "durationSeconds": duration,
-        },
-        "thirdPartyHosts": [],
-        "trackers": [],
-        "signals": signals,
-        "page": {},
-        "security": {},
-        "interest": {},
-        "redactedDocument": {},
-    }
-
-    policy_document = (
-        reconstruct_policy_document(
-            report,
-            config,
-        )
-    )
-
-    return {
-        "telemetry": telemetry,
-        "policy_document": (
-            policy_document
-        ),
-        "expected": deep_copy(
-            report
-        ),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Row generation
-# ---------------------------------------------------------------------------
-
-def normalize_source_row(
-    record: dict,
-    mode: str,
-    config: dict,
-) -> dict:
-    shape = get_path(
-        config,
-        f"record_shapes.{mode}",
-        default={},
-    )
-
-    kind = shape.get(
-        "kind"
-    )
-
-    if kind == "training_row":
-        return deep_copy(
-            record
-        )
-
-    if kind == "standalone_report":
-        return (
-            standalone_report_to_training_row(
-                record,
-                config,
-            )
-        )
-
-    raise ValueError(
-        f"Unsupported configured shape kind: {kind}"
-    )
-
-
-def mutate_expected_report(
-    expected: dict,
     config: dict,
     rng: random.Random,
 ) -> dict:
-    report = deep_copy(
-        expected
+
+    output = deep_copy(
+        report
     )
 
     findings_path = get_path(
         config,
         "paths.findings",
-        default="findings",
+        "findings",
     )
 
     findings = get_path(
-        report,
+        output,
         findings_path,
-        default=[],
+        [],
     )
 
     if not isinstance(
         findings,
         list,
     ):
-        return report
+        return output
 
     mutated_findings = []
 
     for finding in findings:
-        if not isinstance(
+        if isinstance(
             finding,
             dict,
         ):
             mutated_findings.append(
+                mutate_finding_comparison(
+                    finding,
+                    config,
+                    rng,
+                )
+            )
+
+        else:
+            mutated_findings.append(
                 finding
             )
-            continue
-
-        mutated_findings.append(
-            mutate_finding_comparison(
-                finding,
-                config,
-                rng,
-            )
-        )
 
     set_path(
-        report,
+        output,
         findings_path,
         mutated_findings,
     )
@@ -1511,11 +1431,11 @@ def mutate_expected_report(
     counts_path = get_path(
         config,
         "paths.analysis_counts",
-        default="analysis.counts",
+        "analysis.counts",
     )
 
     set_path(
-        report,
+        output,
         counts_path,
         recompute_counts(
             mutated_findings,
@@ -1526,91 +1446,139 @@ def mutate_expected_report(
     summary_path = get_path(
         config,
         "paths.analysis_summary",
-        default="analysis.summary",
+        "analysis.summary",
     )
 
-    set_path(
-        report,
+    existing_summary = get_path(
+        output,
         summary_path,
-        build_summary(
-            mutated_findings,
-            config,
-        ),
     )
+
+    if isinstance(
+        existing_summary,
+        str,
+    ):
+        set_path(
+            output,
+            summary_path,
+            build_summary(
+                mutated_findings,
+                config,
+            ),
+        )
 
     confidence_path = get_path(
         config,
         "paths.overall_confidence",
-        default="analysis.overall_confidence",
+        "analysis.overall_confidence",
+    )
+
+    existing_confidence = get_path(
+        output,
+        confidence_path,
     )
 
     confidence = recompute_confidence(
         mutated_findings
     )
 
-    if confidence is not None:
-        existing = get_path(
-            report,
+    if (
+        is_float(
+            existing_confidence
+        )
+        and confidence is not None
+    ):
+        set_path(
+            output,
             confidence_path,
-            default=None,
+            confidence,
         )
 
-        if is_strict_float(
-            existing
-        ):
-            set_path(
-                report,
-                confidence_path,
-                confidence,
-            )
-
-    return report
+    return output
 
 
 def generate_variant(
-    source_row: dict,
+    source: dict,
+    mode: str,
     source_id: str,
     variant_index: int,
-    seed: int,
+    seed: str,
     config: dict,
     mutation_rules: dict,
     include_metadata: bool,
 ) -> dict:
+
+    variant_seed = (
+        f"{seed}:{source_id}:{variant_index}"
+    )
+
     rng = random.Random(
-        seed
+        variant_seed
     )
 
     row = deep_copy(
-        source_row
+        source
     )
 
-    paths = config.get(
-        "paths",
+    shape = get_path(
+        config,
+        f"record_shapes.{mode}",
         {},
     )
 
-    expected_path = paths.get(
-        "expected",
-        "expected",
+    kind = shape.get(
+        "kind"
     )
 
-    domain_path = paths.get(
-        "domain_in_expected",
-        "expected.domain",
+    if kind == "training_row":
+        report_path = get_path(
+            config,
+            "paths.expected",
+            "expected",
+        )
+
+    elif kind == "standalone_report":
+        report_path = None
+
+    else:
+        raise ValueError(
+            f"Unsupported record kind: {kind}"
+        )
+
+    report = (
+        get_path(
+            row,
+            report_path,
+        )
+        if report_path
+        else row
+    )
+
+    if not isinstance(
+        report,
+        dict,
+    ):
+        raise ValueError(
+            "Expected report object"
+        )
+
+    domain_path = get_path(
+        config,
+        "paths.domain",
+        "domain",
     )
 
     source_domain = get_path(
-        row,
+        report,
         domain_path,
-        default="https://source.example",
     )
 
     if not isinstance(
         source_domain,
         str,
     ):
-        source_domain = (
-            "https://source.example"
+        raise ValueError(
+            "Report domain must already be a string"
         )
 
     new_domain = synthetic_domain(
@@ -1625,125 +1593,88 @@ def generate_variant(
         new_domain,
     )
 
-    expected = get_path(
-        row,
-        expected_path,
-        default=None,
+    report = (
+        get_path(
+            row,
+            report_path,
+        )
+        if report_path
+        else row
     )
 
-    if isinstance(
-        expected,
-        dict,
-    ):
-        expected = mutate_expected_report(
-            expected,
-            config,
-            rng,
-        )
+    mutated_report = mutate_report(
+        report,
+        config,
+        rng,
+    )
 
+    if report_path:
         set_path(
             row,
-            expected_path,
-            expected,
+            report_path,
+            mutated_report,
         )
 
-    # Apply configured scalar mutations last.
+    else:
+        row = mutated_report
+
     apply_mutation_rules(
         row,
         mutation_rules,
         rng,
     )
 
-    # Rebuild policy input so policy evidence and
-    # output evidence stay aligned.
-    expected = get_path(
-        row,
-        expected_path,
-        default={},
-    )
-
-    if isinstance(
-        expected,
-        dict,
-    ):
-        policy_document = (
-            reconstruct_policy_document(
-                expected,
-                config,
-            )
-        )
-
-        policy_document["url"] = (
-            new_domain.rstrip("/")
-            + "/privacy"
-        )
-
-        set_path(
-            row,
-            paths.get(
-                "policy_document",
-                "policy_document",
-            ),
-            policy_document,
-        )
-
-        privacy_policy_path = (
-            paths.get(
-                "privacy_policy_in_expected",
-                "expected.privacy_policy",
-            )
-        )
-
-        privacy_policy = get_path(
-            row,
-            privacy_policy_path,
-            default=None,
-        )
-
-        if isinstance(
-            privacy_policy,
-            dict,
-        ):
-            privacy_policy["url"] = (
-                policy_document["url"]
-            )
-
     if include_metadata:
-        row["_synthetic_metadata"] = {
+        row[
+            "_synthetic_metadata"
+        ] = {
             "synthetic": True,
             "source_id": source_id,
-            "variant_index": (
-                variant_index
-            ),
-            "seed": seed,
-            "source_domain": (
-                source_domain
-            ),
-            "synthetic_domain": (
-                new_domain
-            ),
+            "family_id": source_id,
+            "variant_index": variant_index,
+            "seed": variant_seed,
+            "source_domain": source_domain,
+            "synthetic_domain": new_domain,
         }
 
     return row
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
+def validate_required_fields(
+    row: dict,
+    config: dict,
+) -> List[str]:
+
+    errors = []
+
+    required = get_path(
+        config,
+        "validation.required_fields",
+        [],
+    )
+
+    for path in required:
+        if not path_exists(
+            row,
+            path,
+        ):
+            errors.append(
+                f"missing required field: {path}"
+            )
+
+    return errors
+
 
 def validate_allowed_values(
     row: dict,
     config: dict,
 ) -> List[str]:
+
     errors = []
 
-    validation = config.get(
-        "validation",
-        {},
-    )
-
-    allowed_fields = validation.get(
-        "allowed_values",
+    allowed_fields = get_path(
+        config,
+        "validation.allowed_values",
         {},
     )
 
@@ -1754,12 +1685,10 @@ def validate_allowed_values(
         ):
             continue
 
-        nodes = find_matching_nodes(
+        for _, _, value in find_matching_nodes(
             row,
             path,
-        )
-
-        for _, _, value in nodes:
+        ):
             if value not in allowed:
                 errors.append(
                     f"{path}: invalid value {value!r}"
@@ -1768,69 +1697,33 @@ def validate_allowed_values(
     return errors
 
 
-def validate_required_fields(
-    row: dict,
+def validate_report_counts(
+    report: dict,
     config: dict,
 ) -> List[str]:
+
     errors = []
-
-    required = get_path(
-        config,
-        "validation.required_fields",
-        default=[],
-    )
-
-    for path in required:
-        sentinel = object()
-
-        value = get_path(
-            row,
-            path,
-            default=sentinel,
-        )
-
-        if value is sentinel:
-            errors.append(
-                f"missing required field: {path}"
-            )
-
-    return errors
-
-
-def validate_count_consistency(
-    row: dict,
-    config: dict,
-) -> List[str]:
-    errors = []
-
-    expected_path = get_path(
-        config,
-        "paths.expected",
-        default="expected",
-    )
-
-    expected = get_path(
-        row,
-        expected_path,
-        default=None,
-    )
-
-    if not isinstance(
-        expected,
-        dict,
-    ):
-        return errors
 
     findings_path = get_path(
         config,
         "paths.findings",
-        default="findings",
+        "findings",
+    )
+
+    counts_path = get_path(
+        config,
+        "paths.analysis_counts",
+        "analysis.counts",
     )
 
     findings = get_path(
-        expected,
+        report,
         findings_path,
-        default=None,
+    )
+
+    actual_counts = get_path(
+        report,
+        counts_path,
     )
 
     if not isinstance(
@@ -1838,18 +1731,6 @@ def validate_count_consistency(
         list,
     ):
         return errors
-
-    actual_counts_path = get_path(
-        config,
-        "paths.analysis_counts",
-        default="analysis.counts",
-    )
-
-    actual_counts = get_path(
-        expected,
-        actual_counts_path,
-        default=None,
-    )
 
     calculated = recompute_counts(
         findings,
@@ -1868,8 +1749,10 @@ def validate_count_consistency(
 
 def validate_row(
     row: dict,
+    mode: str,
     config: dict,
 ) -> List[str]:
+
     errors = []
 
     errors.extend(
@@ -1886,67 +1769,102 @@ def validate_row(
         )
     )
 
-    errors.extend(
-        validate_count_consistency(
-            row,
-            config,
-        )
+    shape = get_path(
+        config,
+        f"record_shapes.{mode}",
+        {},
     )
+
+    if shape.get(
+        "kind"
+    ) == "training_row":
+
+        report = get_path(
+            row,
+            get_path(
+                config,
+                "paths.expected",
+                "expected",
+            ),
+        )
+
+    else:
+        report = row
+
+    if isinstance(
+        report,
+        dict,
+    ):
+        errors.extend(
+            validate_report_counts(
+                report,
+                config,
+            )
+        )
 
     return errors
 
-
-# ---------------------------------------------------------------------------
-# Optional SFT conversion
-# ---------------------------------------------------------------------------
 
 def make_sft_text(
     row: dict,
     config: dict,
 ) -> dict:
-    sft = config.get(
-        "sft",
-        {},
-    )
-
-    system_prompt = sft.get(
-        "system_prompt",
-        "",
-    )
 
     telemetry_path = get_path(
         config,
         "paths.telemetry",
-        default="telemetry",
+        "telemetry",
     )
 
     policy_path = get_path(
         config,
         "paths.policy_document",
-        default="policy_document",
+        "policy_document",
     )
 
     expected_path = get_path(
         config,
         "paths.expected",
-        default="expected",
+        "expected",
     )
 
-    user_payload = {
-        "telemetry": get_path(
-            row,
-            telemetry_path,
-        ),
-        "policy_document": get_path(
-            row,
-            policy_path,
-        ),
-    }
+    telemetry = get_path(
+        row,
+        telemetry_path,
+    )
+
+    policy_document = get_path(
+        row,
+        policy_path,
+    )
 
     expected = get_path(
         row,
         expected_path,
     )
+
+    if (
+        telemetry is None
+        or policy_document is None
+        or expected is None
+    ):
+        raise ValueError(
+            "SFT output requires a real training-row input "
+            "containing telemetry, policy_document, and expected. "
+            "The generator will not fabricate typed telemetry "
+            "from analyst-report prose."
+        )
+
+    system_prompt = get_path(
+        config,
+        "sft.system_prompt",
+        "",
+    )
+
+    user_payload = {
+        "telemetry": telemetry,
+        "policy_document": policy_document,
+    }
 
     text = (
         "<|im_start|>system\n"
@@ -1973,62 +1891,43 @@ def make_sft_text(
     }
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Generate configurable synthetic Veilance "
-            "training data from JSON, JSONL, or directories."
+            "Generate realistic synthetic Veilance data "
+            "from JSON, JSONL, or a directory of JSON files."
         )
     )
 
     parser.add_argument(
         "input",
-        help=(
-            "Input .json, .jsonl, or directory"
-        ),
+        help="Input .json, .jsonl, or directory",
     )
 
     parser.add_argument(
         "-o",
         "--output",
         required=True,
-        help="Output JSONL file",
+        help="Output JSONL",
     )
 
     parser.add_argument(
         "--config",
         default="generator_config.json",
-        help=(
-            "Generator configuration JSON"
-        ),
     )
 
     parser.add_argument(
         "--mutation-rules",
         default="mutation_rules.json",
-        help=(
-            "Mutation rules JSON"
-        ),
-    )
-
-    parser.add_argument(
-        "-n",
-        "--count",
-        type=int,
-        default=100,
-        help=(
-            "Synthetic variants per source record"
-        ),
     )
 
     parser.add_argument(
         "--seed",
-        type=int,
-        default=1337,
+        default="1337",
+        help=(
+            "Deterministic seed. Kept as a string; "
+            "it is not cast to another type."
+        ),
     )
 
     parser.add_argument(
@@ -2039,8 +1938,8 @@ def main():
     parser.add_argument(
         "--sft-output",
         help=(
-            "Optional second JSONL containing "
-            '{"text":"..."} rows for TRL SFTTrainer'
+            "Optional trainer-ready JSONL. "
+            "Requires training-row inputs."
         ),
     )
 
@@ -2059,25 +1958,16 @@ def main():
         args.output
     )
 
-    config_path = Path(
-        args.config
-    )
-
-    rules_path = Path(
-        args.mutation_rules
-    )
-
-    if args.count < 1:
-        raise ValueError(
-            "--count must be >= 1"
-        )
-
     config = load_json(
-        config_path
+        Path(
+            args.config
+        )
     )
 
     mutation_rules = load_json(
-        rules_path
+        Path(
+            args.mutation_rules
+        )
     )
 
     records = load_records(
@@ -2115,158 +2005,181 @@ def main():
     invalid = 0
     failed_sources = 0
 
-    with output_path.open(
-        "w",
-        encoding="utf-8",
-    ) as out:
+    generation_counts = []
 
-        for source_index, record in enumerate(
-            records
-        ):
-            try:
-                mode = detect_record_mode(
-                    record,
-                    config,
-                )
+    try:
+        with output_path.open(
+            "w",
+            encoding="utf-8",
+        ) as out:
 
-                source_row = normalize_source_row(
-                    record,
-                    mode,
-                    config,
-                )
-
-                source_id = stable_hash(
-                    json_dumps_stable(
-                        source_row
-                    )
-                )
-
-                for variant_index in range(
-                    args.count
-                ):
-                    variant_seed = (
-                        args.seed
-                        + (
-                            source_index
-                            * 10_000_000
-                        )
-                        + variant_index
-                    )
-
-                    row = generate_variant(
-                        source_row=source_row,
-                        source_id=source_id,
-                        variant_index=(
-                            variant_index
-                        ),
-                        seed=variant_seed,
-                        config=config,
-                        mutation_rules=(
-                            mutation_rules
-                        ),
-                        include_metadata=(
-                            not args.strip_metadata
-                        ),
-                    )
-
-                    errors = validate_row(
-                        row,
+            for source_index, record in enumerate(
+                records
+            ):
+                try:
+                    mode = detect_record_mode(
+                        record,
                         config,
                     )
 
-                    if errors:
-                        invalid += 1
-
-                        print(
-                            (
-                                f"[invalid] source="
-                                f"{source_index} "
-                                f"variant="
-                                f"{variant_index}"
-                            ),
-                            file=sys.stderr,
+                    source_id = stable_hash(
+                        json_dumps_stable(
+                            record
                         )
-
-                        for error in errors:
-                            print(
-                                f"  - {error}",
-                                file=sys.stderr,
-                            )
-
-                        if args.fail_on_invalid:
-                            raise ValueError(
-                                "; ".join(
-                                    errors
-                                )
-                            )
-
-                        continue
-
-                    out.write(
-                        json.dumps(
-                            row,
-                            ensure_ascii=False,
-                        )
-                        + "\n"
                     )
 
-                    if sft_file:
-                        sft_row = make_sft_text(
+                    variant_count = automatic_variant_count(
+                        record=record,
+                        mode=mode,
+                        source_count=len(
+                            records
+                        ),
+                        config=config,
+                    )
+
+                    generation_counts.append(
+                        variant_count
+                    )
+
+                    print(
+                        f"[source {source_index}] "
+                        f"mode={mode} "
+                        f"variants={variant_count}"
+                    )
+
+                    for variant_index in range(
+                        variant_count
+                    ):
+                        row = generate_variant(
+                            source=record,
+                            mode=mode,
+                            source_id=source_id,
+                            variant_index=variant_index,
+                            seed=args.seed,
+                            config=config,
+                            mutation_rules=mutation_rules,
+                            include_metadata=(
+                                not args.strip_metadata
+                            ),
+                        )
+
+                        errors = validate_row(
                             row,
+                            mode,
                             config,
                         )
 
-                        sft_file.write(
+                        if errors:
+                            invalid += 1
+
+                            print(
+                                f"[invalid] source={source_index} "
+                                f"variant={variant_index}",
+                                file=sys.stderr,
+                            )
+
+                            for error in errors:
+                                print(
+                                    f"  - {error}",
+                                    file=sys.stderr,
+                                )
+
+                            if args.fail_on_invalid:
+                                raise ValueError(
+                                    "; ".join(
+                                        errors
+                                    )
+                                )
+
+                            continue
+
+                        out.write(
                             json.dumps(
-                                sft_row,
+                                row,
                                 ensure_ascii=False,
                             )
                             + "\n"
                         )
 
-                    written += 1
+                        if sft_file:
+                            if get_path(
+                                config,
+                                f"record_shapes.{mode}.kind",
+                            ) != "training_row":
+                                raise ValueError(
+                                    "--sft-output cannot be used "
+                                    "with standalone reports because "
+                                    "typed telemetry will not be "
+                                    "fabricated from prose."
+                                )
 
-            except Exception as exc:
-                failed_sources += 1
+                            sft_row = make_sft_text(
+                                row,
+                                config,
+                            )
 
-                print(
-                    (
-                        f"[error] source "
-                        f"{source_index}: {exc}"
-                    ),
-                    file=sys.stderr,
-                )
+                            sft_file.write(
+                                json.dumps(
+                                    sft_row,
+                                    ensure_ascii=False,
+                                )
+                                + "\n"
+                            )
 
-                if args.fail_on_invalid:
-                    raise
+                        written += 1
 
-    if sft_file:
-        sft_file.close()
+                except Exception as exc:
+                    failed_sources += 1
+
+                    print(
+                        f"[error] source {source_index}: {exc}",
+                        file=sys.stderr,
+                    )
+
+                    if args.fail_on_invalid:
+                        raise
+
+    finally:
+        if sft_file:
+            sft_file.close()
 
     print()
     print(
         f"source records:   {len(records)}"
     )
-    print(
-        f"variants/source:  {args.count}"
-    )
+
+    if generation_counts:
+        print(
+            f"planned variants: {sum(generation_counts)}"
+        )
+
+        print(
+            f"smallest family:  {min(generation_counts)}"
+        )
+
+        print(
+            f"largest family:   {max(generation_counts)}"
+        )
+
     print(
         f"written:          {written}"
     )
+
     print(
         f"invalid skipped:  {invalid}"
     )
+
     print(
         f"source failures:  {failed_sources}"
     )
+
     print(
         f"output:           {output_path}"
     )
 
     if args.sft_output:
         print(
-            f"sft output:       "
-            f"{args.sft_output}"
+            f"sft output:       {args.sft_output}"
         )
 
 
