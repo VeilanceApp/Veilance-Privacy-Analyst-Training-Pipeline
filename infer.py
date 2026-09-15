@@ -19,15 +19,55 @@ def parse_json(text):
     try:return json.loads(text)
     except: return json.loads(text[text.find('{'):text.rfind('}')+1])
 
-@torch.inference_mode()
-def analyze(tok,model,record,max_new_tokens=2600):
-    validate_snapshot_shape(record['telemetry'])
-    msgs=[{'role':'system','content':SYSTEM_PROMPT},{'role':'user','content':build_user_prompt(record)}]
-    try: enc=tok.apply_chat_template(msgs,tokenize=True,add_generation_prompt=True,enable_thinking=False,return_tensors='pt',return_dict=True)
-    except TypeError: enc=tok.apply_chat_template(msgs,tokenize=True,add_generation_prompt=True,return_tensors='pt',return_dict=True)
-    enc={k:v.to(model.device) for k,v in enc.items()}
-    out=model.generate(**enc,max_new_tokens=max_new_tokens,do_sample=False,repetition_penalty=1.02,pad_token_id=tok.eos_token_id,eos_token_id=tok.eos_token_id)
-    report=parse_json(tok.decode(out[0,enc['input_ids'].shape[-1]:],skip_special_tokens=True)); validate_report(report); return report
+def normalize_report(report):
+    findings = report.get("findings", [])
+
+    counts = {
+        "matched": 0,
+        "partially_matched": 0,
+        "policy_only": 0,
+        "observed_only": 0,
+        "possible_contradictions": 0,
+        "indeterminate": 0,
+    }
+
+    mapping = {
+        "matched": "matched",
+        "partially_matched": "partially_matched",
+        "policy_only": "policy_only",
+        "observed_only": "observed_only",
+        "possible_contradiction": "possible_contradictions",
+        "indeterminate": "indeterminate",
+    }
+
+    confidences = []
+
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+
+        comparison = finding.get("comparison")
+
+        field = mapping.get(comparison)
+
+        if field:
+            counts[field] += 1
+
+        confidence = finding.get("confidence")
+
+        if isinstance(confidence, float):
+            confidences.append(confidence)
+
+    analysis = report.get("analysis")
+
+    if isinstance(analysis, dict):
+        analysis["counts"] = counts
+        if confidences:
+            analysis["overall_confidence"] = round(
+                sum(confidences) / len(confidences),
+                2,
+            )
+    return report
 
 
 def main():
