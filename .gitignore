@@ -1,6 +1,10 @@
-__pycache__
-.idea
-test*
-generator_config.json
-mutation_rules.json
+__pycache__/
+*.py[cod]
+.idea/
+.venv/
+data/processed/
+models/
 result*
+test-results/
+*_rules.json
+test*

@@ -1,0 +1,13 @@
+{
+  "variants_per_source": 24,
+  "no_policy_probability": 0.08,
+  "augment_probability": 0.3,
+  "max_findings": 8,
+  "comparison_weights": {
+    "matched": 0.27,
+    "partially_matched": 0.3,
+    "policy_only": 0.1,
+    "observed_only": 0.27,
+    "possible_contradiction": 0.06
+  }
+}
