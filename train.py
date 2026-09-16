@@ -2,10 +2,14 @@ import argparse
 import json
 import os
 import shutil
+
 from pathlib import Path
+from datetime import timedelta
 
 import torch
+
 from accelerate import PartialState
+from accelerate.utils import InitProcessGroupKwargs
 from datasets import load_dataset, load_from_disk
 from peft import LoraConfig
 from transformers import AutoTokenizer, BitsAndBytesConfig
@@ -63,22 +67,14 @@ def validate_lengths(
     tokenizer,
     max_length: int,
     split_name: str,
-    batch_size: int = 256,
+    num_proc: int,
 ) -> None:
-    too_long = []
-
-    total = len(dataset)
-
     print(
         f"Validating token lengths for {split_name}: "
-        f"{total:,} examples"
+        f"{len(dataset):,} examples using {num_proc} processes"
     )
 
-    for start in range(0, total, batch_size):
-        end = min(start + batch_size, total)
-
-        batch = dataset[start:end]
-
+    def calculate_lengths(batch):
         texts = [
             prompt + completion
             for prompt, completion in zip(
@@ -94,35 +90,49 @@ def validate_lengths(
             padding=False,
         )
 
-        for offset, input_ids in enumerate(encoded["input_ids"]):
-            token_count = len(input_ids)
+        return {
+            "_token_length": [
+                len(input_ids)
+                for input_ids in encoded["input_ids"]
+            ]
+        }
 
-            if token_count > max_length:
-                too_long.append(
-                    (start + offset, token_count)
-                )
+    checked = dataset.map(
+        calculate_lengths,
+        batched=True,
+        batch_size=256,
+        num_proc=num_proc,
+        desc=f"Tokenize {split_name}",
+    )
 
-                if len(too_long) >= 10:
-                    details = ", ".join(
-                        f"row {index}: {count}"
-                        for index, count in too_long
-                    )
+    too_long = []
 
-                    raise ValueError(
-                        f"{split_name} contains examples longer than "
-                        f"--max-length={max_length}: {details}. "
-                        "Reduce policy sections or raise max length. "
-                        "Silent truncation could corrupt JSON completions."
-                    )
-
-        if start % (batch_size * 20) == 0:
-            print(
-                f"{split_name}: checked "
-                f"{end:,}/{total:,} examples"
+    for index, token_count in enumerate(
+        checked["_token_length"]
+    ):
+        if token_count > max_length:
+            too_long.append(
+                (index, token_count)
             )
 
+            if len(too_long) >= 10:
+                break
+
+    if too_long:
+        details = ", ".join(
+            f"row {index}: {count}"
+            for index, count in too_long
+        )
+
+        raise ValueError(
+            f"{split_name} contains examples longer than "
+            f"--max-length={max_length}: {details}. "
+            "Reduce policy sections or raise max length. "
+            "Silent truncation could corrupt JSON completions."
+        )
+
     print(
-        f"{split_name}: all {total:,} examples "
+        f"{split_name}: all {len(dataset):,} examples "
         f"fit within {max_length:,} tokens"
     )
 
@@ -203,6 +213,7 @@ def preprocess_datasets(
         tokenizer=tokenizer,
         max_length=max_length,
         split_name="training split",
+        num_proc=num_proc,
     )
 
     validate_lengths(
@@ -210,6 +221,7 @@ def preprocess_datasets(
         tokenizer=tokenizer,
         max_length=max_length,
         split_name="validation split",
+        num_proc=num_proc,
     )
 
     if train_cache.exists():
@@ -321,7 +333,11 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise SystemExit("CUDA GPU required")
 
-    state = PartialState()
+    process_group_kwargs = InitProcessGroupKwargs(
+        timeout=timedelta(minutes=60),
+    ).to_kwargs()
+
+    state = PartialState(**process_group_kwargs)
 
     rank = state.process_index
     local_rank = state.local_process_index
@@ -442,6 +458,7 @@ def main() -> None:
 
         num_train_epochs=args.epochs,
         learning_rate=args.learning_rate,
+        ddp_timeout=3600,
 
         per_device_train_batch_size=1,
         per_device_eval_batch_size=1,
