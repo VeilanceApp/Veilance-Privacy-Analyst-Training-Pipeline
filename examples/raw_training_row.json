@@ -217,20 +217,27 @@
     "url": "https://cloud.google.com/terms/secops/privacy-notice",
     "found": true,
     "applicable": true,
+    "complete": true,
+    "retrieval_method": "labeled_fixture",
     "sections": [
       {
         "heading": "Personal Information We Collect",
-        "text": "EXAMPLE PLACEHOLDER: replace this with the actual policy section text used to support the labeled report."
+        "text": "We collect technical and operational details about use of the services. These details may include browser and device information, device identifiers, unique identifiers associated with a browser or device, and identifiers from cookies or tokens."
       },
       {
         "heading": "Why We Process Your Information",
-        "text": "EXAMPLE PLACEHOLDER: replace this with the actual policy section text used to support the labeled report."
+        "text": "We process personal information for analytics and measurement, to understand how the services are used, to maintain and improve the services, and to protect service security."
       },
       {
         "heading": "How We Share Your Information",
-        "text": "EXAMPLE PLACEHOLDER: replace this with the actual policy section text used to support the labeled report."
+        "text": "Service providers may process information for us, and some functions use third-party services enabled through the services."
+      },
+      {
+        "heading": "U.S. State Privacy Law Requirements",
+        "text": "Users may have rights to access, correct, or delete certain personal information and may contact us about applicable state privacy rights."
       }
-    ]
+    ],
+    "limitations": []
   },
   "expected": {
     "domain": "https://www.virustotal.com",

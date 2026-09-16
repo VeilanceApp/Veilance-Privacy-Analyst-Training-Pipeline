@@ -198,6 +198,9 @@ The generator accepts:
 - a Veilance report object;
 - a database row containing `policy_raw_results`;
 - an existing training row containing `expected`.
+- strict JSON arrays and objects;
+- line-delimited JSON;
+- pasted Mongo shell output with unquoted keys, single-quoted strings, `ObjectId(...)`, trailing commas, and `Type "it" for more` pagination blocks.
 
 ```bash
 python generate_synthetic_dataset.py seed_reports/ \
@@ -207,11 +210,56 @@ python generate_synthetic_dataset.py seed_reports/ \
   --fail-on-invalid
 ```
 
+For a processed database export like the supplied Mongo shell dump:
+
+```bash
+python generate_synthetic_dataset.py database_results.txt \
+  --output data/db_synthetic_raw.jsonl \
+  --config generator_config.json \
+  --count 24 \
+  --seed veilance-db-v1 \
+  --fail-on-invalid
+```
+
+The parser treats the dump as data and never evaluates JavaScript. Database identifiers and source metadata are retained only under `_synthetic_metadata.provenance`; `prepare_dataset.py` removes that metadata from model prompts.
+
+Processed `policy_raw_results` records contain completed reports but do not contain the original structured telemetry or complete retrieved policy text. They are therefore used as scenario seeds. The generator creates new exact telemetry, synthetic policy sections, and matching expected reports together. It does not mislabel the processed report prose as original telemetry.
+
 Each scenario generates telemetry, applicable policy language, and its expected finding together. That keeps API counts, network hosts, tracker categories, disclosure state, telemetry state, comparison, evidence, and limitations mutually consistent. Host and tracker records describing the same requests are counted once in `observation_count`.
 
 The old misspelled `generate_sythetic_dataset.py` filename remains as a compatibility wrapper.
 
-Use at least three independent source reports or domains. Synthetic descendants retain a `family_id`, and all descendants from one source stay in the same split to prevent train/test leakage.
+Use at least three independent source domains. Synthetic descendants retain a domain-derived `family_id`, so repeated database records and every generated descendant for the same source domain remain in one split to prevent train/test leakage.
+
+## Prepare a processed database export directly
+
+`prepare_dataset.py` can perform database conversion and dataset preparation in one command:
+
+```bash
+python prepare_dataset.py \
+  --input database_results.txt \
+  --input-format database \
+  --synthetic-variants 24 \
+  --generator-config generator_config.json \
+  --generator-seed veilance-db-v1 \
+  --seed 1337 \
+  --output-dir data/processed \
+  --save-raw-rows
+```
+
+This writes:
+
+- `data/processed/raw_training_rows.jsonl`: reusable exact telemetry/policy/expected rows;
+- `data/processed/train.jsonl`: rendered SFT training examples;
+- `data/processed/validation.jsonl`: validation examples;
+- `data/processed/test.jsonl`: held-out evaluation examples;
+- `data/processed/manifest.json`: source, family, split, prompt, seed, and generator counts.
+
+`--input-format auto` is the default and permits a mix of already-correct raw training rows and processed database records. Use `--input-format training` when every record must already contain `telemetry`, `policy_document`, and `expected`. Use `--input-format database` when every input record should be treated as a scenario seed even if it resembles a training row.
+
+`--save-raw-rows` accepts an optional path. With no path it writes `raw_training_rows.jsonl` inside the output directory.
+
+See `DATABASE_TRAINING.md` for a complete database-export-to-training walkthrough.
 
 ## Prepare, train, and evaluate
 

@@ -11,6 +11,7 @@ import datetime as dt
 import hashlib
 import json
 import random
+import re
 import sys
 from pathlib import Path
 from typing import Any, Iterable
@@ -46,6 +47,7 @@ COMPARISON_POLICY_STATUS = {
 CATEGORY_ALIASES = {
     "browser_characteristics": "browser_and_device_characteristics",
     "device_characteristics": "browser_and_device_characteristics",
+    "site_analytics": "analytics",
     "tracking": "tracking",
     "advertising_tracker": "advertising",
     "social_media": "social_media_tracking",
@@ -85,6 +87,7 @@ SIGNAL_TEMPLATES = {
     "service_workers": [("browser-storage", "ServiceWorker", "register")],
     "permissions": [("permissions", "Permissions", "query")],
     "geolocation": [("geolocation", "Geolocation", "get-current-position")],
+    "telemetry": [("beacon", "Beacon", "send")],
 }
 
 TRACKER_CATEGORIES = {
@@ -110,6 +113,7 @@ DEFAULT_BEHAVIOR = {
     "service_workers": "service_worker_registration",
     "permissions": "permission_query",
     "geolocation": "geolocation_access",
+    "telemetry": "telemetry_reporting",
 }
 
 POLICY_LANGUAGE = {
@@ -218,6 +222,13 @@ POLICY_LANGUAGE = {
         "implicit": "Location-based features use the location selected or permitted by the user.",
         "denial": "We do not access browser geolocation.",
     },
+    "telemetry": {
+        "heading": "Diagnostics and Telemetry",
+        "explicit": "We use browser telemetry and Beacon API reporting to send service diagnostics and usage measurements.",
+        "broad": "We collect diagnostic, usage, and performance information to operate and improve the service.",
+        "implicit": "The service reports operational measurements used to diagnose performance and reliability.",
+        "denial": "We do not send browser telemetry or diagnostic reports.",
+    },
 }
 
 BASE_SEVERITY = {
@@ -236,6 +247,7 @@ BASE_SEVERITY = {
     "service_workers": "low",
     "permissions": "medium",
     "geolocation": "high",
+    "telemetry": "medium",
 }
 
 
@@ -247,9 +259,333 @@ def stable_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+class RelaxedMongoParser:
+    """Parse data-only Mongo shell output without evaluating JavaScript.
+
+    Supported input includes objects/arrays, quoted or bare object keys,
+    single- or double-quoted strings, trailing commas, comments, numbers,
+    booleans/null, and common scalar wrappers such as ObjectId(...), ISODate(...),
+    NumberLong(...), Decimal128(...), and UUID(...). Unknown function calls are
+    retained as plain serializable metadata and are never executed.
+    """
+
+    _NUMBER_RE = re.compile(
+        r"[+-]?(?:0[xX][0-9a-fA-F]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
+    )
+    _IDENTIFIER_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+
+    def __init__(self, text: str):
+        self.text = text.lstrip("\ufeff")
+        self.index = 0
+
+    def parse(self) -> Any:
+        self._skip_ignored()
+        value = self._parse_value()
+        self._skip_ignored()
+        if self._peek() == ";":
+            self.index += 1
+            self._skip_ignored()
+        if self.index != len(self.text):
+            self._error("unexpected content after the top-level value")
+        return value
+
+    def parse_many(self) -> list[Any]:
+        values = []
+        while True:
+            self._skip_ignored()
+            while self._peek() == ";":
+                self.index += 1
+                self._skip_ignored()
+            if self.index >= len(self.text):
+                return values
+            values.append(self._parse_value())
+
+    def _position(self) -> str:
+        line = self.text.count("\n", 0, self.index) + 1
+        line_start = self.text.rfind("\n", 0, self.index) + 1
+        column = self.index - line_start + 1
+        return f"line {line}, column {column}"
+
+    def _error(self, message: str):
+        raise ValueError(f"{message} at {self._position()}")
+
+    def _peek(self, offset: int = 0) -> str:
+        position = self.index + offset
+        return self.text[position] if position < len(self.text) else ""
+
+    def _skip_ignored(self) -> None:
+        while True:
+            while self._peek() and self._peek().isspace():
+                self.index += 1
+            if self.text.startswith("//", self.index):
+                newline = self.text.find("\n", self.index + 2)
+                self.index = len(self.text) if newline < 0 else newline + 1
+                continue
+            if self.text.startswith("/*", self.index):
+                end = self.text.find("*/", self.index + 2)
+                if end < 0:
+                    self._error("unterminated block comment")
+                self.index = end + 2
+                continue
+            break
+
+    def _consume(self, expected: str) -> None:
+        self._skip_ignored()
+        if not self.text.startswith(expected, self.index):
+            self._error(f"expected {expected!r}")
+        self.index += len(expected)
+
+    def _parse_value(self) -> Any:
+        self._skip_ignored()
+        current = self._peek()
+        if not current:
+            self._error("expected a value")
+        if current == "{":
+            return self._parse_object()
+        if current == "[":
+            return self._parse_array()
+        if current in {"'", '"'}:
+            return self._parse_string()
+        if current.isdigit() or current in {"+", "-", "."}:
+            match = self._NUMBER_RE.match(self.text, self.index)
+            if match:
+                return self._parse_number(match.group(0))
+        if self._IDENTIFIER_RE.match(self.text, self.index):
+            return self._parse_identifier_value()
+        self._error(f"unsupported token {current!r}")
+
+    def _parse_object(self) -> dict:
+        self._consume("{")
+        result = {}
+        self._skip_ignored()
+        if self._peek() == "}":
+            self.index += 1
+            return result
+        while True:
+            self._skip_ignored()
+            if self._peek() in {"'", '"'}:
+                key = self._parse_string()
+            else:
+                key = self._parse_identifier()
+            self._consume(":")
+            result[str(key)] = self._parse_value()
+            self._skip_ignored()
+            if self._peek() == "}":
+                self.index += 1
+                return result
+            self._consume(",")
+            self._skip_ignored()
+            if self._peek() == "}":
+                self.index += 1
+                return result
+
+    def _parse_array(self) -> list:
+        self._consume("[")
+        result = []
+        self._skip_ignored()
+        if self._peek() == "]":
+            self.index += 1
+            return result
+        while True:
+            result.append(self._parse_value())
+            self._skip_ignored()
+            if self._peek() == "]":
+                self.index += 1
+                return result
+            self._consume(",")
+            self._skip_ignored()
+            if self._peek() == "]":
+                self.index += 1
+                return result
+
+    def _parse_string(self) -> str:
+        quote = self._peek()
+        self.index += 1
+        output = []
+        escapes = {
+            "b": "\b",
+            "f": "\f",
+            "n": "\n",
+            "r": "\r",
+            "t": "\t",
+            "v": "\v",
+            "0": "\0",
+        }
+        while self.index < len(self.text):
+            current = self._peek()
+            self.index += 1
+            if current == quote:
+                return "".join(output)
+            if current != "\\":
+                output.append(current)
+                continue
+            if self.index >= len(self.text):
+                self._error("unterminated escape sequence")
+            escaped = self._peek()
+            self.index += 1
+            if escaped in {"'", '"', "\\", "/"}:
+                output.append(escaped)
+            elif escaped in escapes:
+                output.append(escapes[escaped])
+            elif escaped == "x":
+                digits = self.text[self.index : self.index + 2]
+                if not re.fullmatch(r"[0-9a-fA-F]{2}", digits):
+                    self._error("invalid hexadecimal escape")
+                output.append(chr(int(digits, 16)))
+                self.index += 2
+            elif escaped == "u":
+                if self._peek() == "{":
+                    end = self.text.find("}", self.index + 1)
+                    if end < 0:
+                        self._error("unterminated Unicode escape")
+                    digits = self.text[self.index + 1 : end]
+                    if not re.fullmatch(r"[0-9a-fA-F]{1,6}", digits):
+                        self._error("invalid Unicode escape")
+                    self.index = end + 1
+                else:
+                    digits = self.text[self.index : self.index + 4]
+                    if not re.fullmatch(r"[0-9a-fA-F]{4}", digits):
+                        self._error("invalid Unicode escape")
+                    self.index += 4
+                output.append(chr(int(digits, 16)))
+            elif escaped in {"\n", "\r"}:
+                if escaped == "\r" and self._peek() == "\n":
+                    self.index += 1
+            else:
+                output.append(escaped)
+        self._error("unterminated string")
+
+    def _parse_identifier(self) -> str:
+        self._skip_ignored()
+        match = self._IDENTIFIER_RE.match(self.text, self.index)
+        if not match:
+            self._error("expected an identifier")
+        self.index = match.end()
+        return match.group(0)
+
+    def _parse_identifier_value(self) -> Any:
+        name = self._parse_identifier()
+        lowered = name.lower()
+        if lowered in {"true", "false"}:
+            return lowered == "true"
+        if lowered in {"null", "none", "undefined", "nan"}:
+            return None
+        if lowered == "infinity":
+            return None
+        if name == "new":
+            name = self._parse_identifier()
+        self._skip_ignored()
+        if self._peek() == "(":
+            return self._parse_wrapper(name)
+        return name
+
+    def _parse_wrapper(self, name: str) -> Any:
+        self._consume("(")
+        arguments = []
+        self._skip_ignored()
+        if self._peek() != ")":
+            while True:
+                arguments.append(self._parse_value())
+                self._skip_ignored()
+                if self._peek() == ")":
+                    break
+                self._consume(",")
+        self._consume(")")
+        first = arguments[0] if arguments else None
+        if name in {"ObjectId", "ISODate", "Date", "UUID", "Long"}:
+            return first
+        if name in {"NumberLong", "NumberInt", "Int32"}:
+            try:
+                return int(first)
+            except (TypeError, ValueError):
+                return first
+        if name in {"Decimal128", "NumberDecimal"}:
+            return str(first) if first is not None else None
+        return {"$mongo_function": name, "arguments": arguments}
+
+    def _parse_number(self, token: str) -> int | float:
+        self.index += len(token)
+        if token.lower().startswith(("0x", "+0x", "-0x")):
+            sign = -1 if token.startswith("-") else 1
+            return sign * int(token.lstrip("+-")[2:], 16)
+        if any(character in token for character in ".eE"):
+            return float(token)
+        return int(token)
+
+
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def parse_database_text(text: str) -> Any:
+    """Parse strict JSON first, then safe Mongo-shell-style data literals."""
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        cleaned_lines = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped == 'Type "it" for more' or re.fullmatch(
+                r"[A-Za-z0-9_.-]+>\s*it", stripped
+            ):
+                continue
+            cleaned_lines.append(line)
+        values = RelaxedMongoParser("\n".join(cleaned_lines)).parse_many()
+        if not values:
+            raise ValueError("input did not contain a data value")
+        if len(values) == 1:
+            return values[0]
+        combined = []
+        for value in values:
+            if isinstance(value, list):
+                combined.extend(value)
+            else:
+                combined.append(value)
+        return combined
+
+
+def _records_from_value(value: Any, label: str) -> list[dict]:
+    if isinstance(value, dict):
+        for collection_key in ("documents", "records", "results", "items", "data"):
+            collection = value.get(collection_key)
+            if isinstance(collection, list) and not any(
+                key in value for key in ("policy_raw_results", "expected", "findings")
+            ):
+                value = collection
+                break
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list) and all(isinstance(item, dict) for item in value):
+        return value
+    raise ValueError(f"{label}: top level must be an object or an array of objects")
+
+
+def load_input_records(path: Path) -> list[dict]:
+    text = path.read_text(encoding="utf-8")
+    if not text.strip():
+        return []
+    try:
+        return _records_from_value(parse_database_text(text), str(path))
+    except ValueError as whole_file_error:
+        records = []
+        for line_number, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                records.extend(
+                    _records_from_value(
+                        parse_database_text(line),
+                        f"{path}:{line_number}",
+                    )
+                )
+            except ValueError as line_error:
+                raise ValueError(
+                    f"{path}: could not parse as a document or line-delimited records; "
+                    f"document error: {whole_file_error}; line error: {line_error}"
+                ) from line_error
+        return records
 
 
 def iter_input(path: Path) -> Iterable[dict]:
@@ -259,39 +595,24 @@ def iter_input(path: Path) -> Iterable[dict]:
         else sorted(
             item
             for item in path.rglob("*")
-            if item.is_file() and item.suffix.lower() in {".json", ".jsonl"}
+            if item.is_file()
+            and item.suffix.lower() in {".json", ".jsonl", ".txt", ".js"}
         )
     )
     if not files:
-        raise ValueError(f"no .json or .jsonl files found at {path}")
+        raise ValueError(f"no .json, .jsonl, .txt, or .js data files found at {path}")
     for file in files:
-        if file.suffix.lower() == ".jsonl":
-            with file.open("r", encoding="utf-8") as handle:
-                for line_number, line in enumerate(handle, 1):
-                    if not line.strip():
-                        continue
-                    value = json.loads(line)
-                    if not isinstance(value, dict):
-                        raise ValueError(f"{file}:{line_number}: row must be an object")
-                    yield value
-        else:
-            value = load_json(file)
-            if isinstance(value, dict):
-                yield value
-            elif isinstance(value, list):
-                for index, item in enumerate(value):
-                    if not isinstance(item, dict):
-                        raise ValueError(f"{file}:{index}: item must be an object")
-                    yield item
-            else:
-                raise ValueError(f"{file}: top level must be an object or array")
+        yield from load_input_records(file)
 
 
 def source_report(record: dict) -> dict:
     if isinstance(record.get("expected"), dict):
         return record["expected"]
-    if isinstance(record.get("policy_raw_results"), dict):
-        return record["policy_raw_results"]
+    policy_raw_results = record.get("policy_raw_results")
+    if isinstance(policy_raw_results, str):
+        policy_raw_results = parse_database_text(policy_raw_results)
+    if isinstance(policy_raw_results, dict):
+        return policy_raw_results
     if isinstance(record.get("findings"), list):
         return record
     raise ValueError(
@@ -354,6 +675,7 @@ def choose_comparison(category: str, config: dict, rng: random.Random) -> str:
         "device_sensors",
         "webrtc",
         "geolocation",
+        "telemetry",
     }:
         weights["possible_contradiction"] = 0.0
     values = [
@@ -372,6 +694,37 @@ def choose_comparison(category: str, config: dict, rng: random.Random) -> str:
 def synthetic_domain(source_domain: str, source_id: str, variant_index: int) -> str:
     label = stable_hash(f"{source_domain}:{source_id}:{variant_index}")
     return f"https://site-{label}.example"
+
+
+def source_family_id(source_domain: str) -> str:
+    candidate = source_domain if "://" in source_domain else "https://" + source_domain
+    parsed = urlparse(candidate)
+    family = (parsed.hostname or source_domain).lower().strip().rstrip(".")
+    return stable_hash("source-domain:" + family)
+
+
+def source_provenance(source: dict) -> dict:
+    provenance = {
+        "source_kind": (
+            "processed_database_result"
+            if "policy_raw_results" in source
+            else "training_row"
+            if "expected" in source
+            else "report"
+        )
+    }
+    for source_key, metadata_key in (
+        ("_id", "database_record_id"),
+        ("policy_id", "policy_id"),
+        ("inserted_at", "inserted_at"),
+        ("associated_domain", "associated_domain"),
+        ("associated_policy_link", "associated_policy_link"),
+    ):
+        value = source.get(source_key)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            if value is not None:
+                provenance[metadata_key] = value
+    return provenance
 
 
 def make_signal_observation(category: str, rng: random.Random) -> tuple[list[dict], list[str], int]:
@@ -767,7 +1120,11 @@ def generate_variant(
     config: dict,
 ) -> dict:
     report_source = source_report(source)
-    source_domain = str(report_source.get("domain") or f"source-{source_index}.example")
+    source_domain = str(
+        report_source.get("domain")
+        or source.get("associated_domain")
+        or f"source-{source_index}.example"
+    )
     source_id = stable_hash(stable_json(source))
     rng = random.Random(f"{seed}:{source_id}:{variant_index}")
     domain = synthetic_domain(source_domain, source_id, variant_index)
@@ -939,12 +1296,13 @@ def generate_variant(
         "_synthetic_metadata": {
             "synthetic": True,
             "source_id": source_id,
-            "family_id": source_id,
+            "family_id": source_family_id(source_domain),
             "source_index": source_index,
             "variant_index": variant_index,
             "seed": seed,
             "source_domain": source_domain,
             "synthetic_domain": domain,
+            "provenance": source_provenance(source),
         },
     }
     validate_policy_document(policy_document)
@@ -969,16 +1327,30 @@ def load_config(path: str | None) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate coherent raw training JSONL from seed Veilance reports. "
-            "Output rows contain exact v2 telemetry, policy_document, and expected."
+            "Generate coherent raw training JSONL from Veilance reports, JSON/JSONL "
+            "database exports, or pasted Mongo shell output. Output rows contain "
+            "exact v2 telemetry, policy_document, and expected."
         )
     )
-    parser.add_argument("input", help="Input .json, .jsonl, or directory")
+    parser.add_argument(
+        "input",
+        help=(
+            "Input .json, .jsonl, .txt, .js, or directory. Mongo shell syntax "
+            "such as unquoted keys and ObjectId(...) is accepted as data only."
+        ),
+    )
     parser.add_argument("-o", "--output", required=True)
     parser.add_argument("--config")
     parser.add_argument("--seed", default="1337")
     parser.add_argument("--count", type=int, help="Variants per source")
-    parser.add_argument("--strip-metadata", action="store_true")
+    parser.add_argument(
+        "--strip-metadata",
+        action="store_true",
+        help=(
+            "Remove database provenance and generation details while retaining "
+            "the minimum source-domain family metadata needed for leakage-safe splits."
+        ),
+    )
     parser.add_argument("--fail-on-invalid", action="store_true")
     args = parser.parse_args()
 
@@ -1006,7 +1378,12 @@ def main() -> None:
                         config,
                     )
                     if args.strip_metadata:
-                        row.pop("_synthetic_metadata", None)
+                        metadata = row.get("_synthetic_metadata", {})
+                        row["_synthetic_metadata"] = {
+                            key: metadata[key]
+                            for key in ("synthetic", "family_id", "source_domain")
+                            if key in metadata
+                        }
                     handle.write(json.dumps(row, ensure_ascii=False) + "\n")
                     written += 1
                 except Exception as exc:
@@ -1022,6 +1399,15 @@ def main() -> None:
         json.dumps(
             {
                 "source_records": len(records),
+                "processed_database_records": sum(
+                    "policy_raw_results" in record for record in records
+                ),
+                "source_domains": len(
+                    {
+                        str(source_report(record).get("domain") or "")
+                        for record in records
+                    }
+                ),
                 "variants_per_source": count,
                 "written": written,
                 "invalid": invalid,
