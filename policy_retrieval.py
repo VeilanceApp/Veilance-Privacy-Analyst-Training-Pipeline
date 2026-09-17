@@ -1227,11 +1227,6 @@ class PolicyRetriever:
             ):
                 break
 
-        /*
-        Python does not allow JS-style comments here.
-        This line is intentionally kept as normal Python below.
-        */
-
         if not sections and full_text:
             chunks = self._split_text(
                 full_text
