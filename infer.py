@@ -1986,6 +1986,13 @@ def generate_report(
         generated[:500],
     )
 
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "===== BEGIN RAW MODEL OUTPUT =====\n%s\n"
+            "===== END RAW MODEL OUTPUT =====",
+            generated,
+        )
+
     parsed = parse_json(
         generated
     )
