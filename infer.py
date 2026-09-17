@@ -1677,6 +1677,8 @@ def _chat_inputs(
         - user_prompt_started,
     )
 
+    logger.debug(f"=== START RAW USER PROMPT\n{user_prompt}\n=== END RAW USER PROMPT ===")
+
     logger.debug(
         "System prompt chars=%d user_prompt_chars=%d "
         "analysis_input_size=%s",
