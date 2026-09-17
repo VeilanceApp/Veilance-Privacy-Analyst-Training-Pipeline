@@ -311,6 +311,7 @@ class PolicyRetriever:
         section_chunk_chars=4_500,
         max_sections=256,
         max_model_policy_chars=14_000,
+        max_policy_chars=None,
         max_model_sections=8,
         max_candidates=14,
         search_enabled=True,
@@ -323,6 +324,9 @@ class PolicyRetriever:
         self.max_document_chars = max_document_chars
         self.section_chunk_chars = section_chunk_chars
         self.max_sections = max_sections
+        if max_policy_chars is not None:
+            max_model_policy_chars = max_policy_chars
+
         self.max_model_policy_chars = max_model_policy_chars
         self.max_model_sections = max_model_sections
         self.max_candidates = max_candidates
@@ -1225,6 +1229,23 @@ class PolicyRetriever:
 
             model_chars = sum(len(section["text"]) for section in model_sections)
 
+            # Keep the public policy_document.sections schema exactly compatible
+            # with input_normalization.validate_policy_document(): each item may
+            # contain heading and text only. Rich section metadata stays in
+            # document.sections/model_context.sections for host-side use.
+            public_sections = []
+
+            for section in model_sections:
+                heading = section["heading"]
+
+                if section.get("parts", 1) > 1:
+                    heading = f'{heading} (Part {section["part"]}/{section["parts"]})'
+
+                public_sections.append({
+                    "heading": heading,
+                    "text": section["text"],
+                })
+
             return {
                 "url": final_url,
                 "found": True,
@@ -1237,7 +1258,7 @@ class PolicyRetriever:
                 "retrieval_method": candidate["method"],
 
                 # Backward-compatible model-ready sections.
-                "sections": model_sections,
+                "sections": public_sections,
 
                 "document_hash": _document_hash(extracted["full_text"]),
                 "document": {
