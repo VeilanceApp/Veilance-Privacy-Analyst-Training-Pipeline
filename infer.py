@@ -583,6 +583,49 @@ def _section_key(value: str) -> str:
     ).strip()
 
 
+def _downgrade_finding_for_policy_failure(
+    finding: dict,
+    *,
+    explanation: str,
+) -> None:
+    """Make a finding schema-valid without inventing missing policy evidence."""
+
+    finding["policy"] = {
+        "status": "unknown",
+        "evidence": "",
+        "section": "",
+    }
+
+    finding["comparison"] = (
+        "indeterminate"
+    )
+
+    finding["severity"] = (
+        "informational"
+    )
+
+    confidence = finding.get(
+        "confidence"
+    )
+
+    if (
+        isinstance(
+            confidence,
+            (int, float),
+        )
+        and not isinstance(
+            confidence,
+            bool,
+        )
+    ):
+        finding["confidence"] = min(
+            float(confidence),
+            0.5,
+        )
+
+    finding["explanation"] = explanation
+
+
 # =============================================================================
 # Policy grounding
 # =============================================================================
@@ -592,10 +635,11 @@ def _repair_policy_grounding(
     report: dict,
     policy_document: dict,
 ) -> int:
-    """Conservatively repair model section citations without inventing evidence.
+    """Conservatively repair missing or ungrounded model policy evidence.
 
-    Returns the number of disclosure-dependent findings downgraded because their
-    citations could not be grounded in a Playwright-extracted section.
+    Returns the number of findings downgraded because the model omitted the
+    policy object or its disclosure citation could not be grounded in a
+    Playwright-extracted section.
     """
 
     started = time.perf_counter()
@@ -647,23 +691,54 @@ def _repair_policy_grounding(
     )
 
     downgraded = 0
+    missing_policy_objects = 0
     repaired = 0
     unsupported_optional_citations = 0
 
     for finding_index, finding in enumerate(
         findings
     ):
-        if (
-            not isinstance(finding, dict)
-            or not isinstance(
-                finding.get("policy"),
-                dict,
-            )
-        ):
+        if not isinstance(finding, dict):
             logger.debug(
                 "Skipping grounding check finding=%d "
-                "reason=missing_policy_object",
+                "reason=invalid_finding_type",
                 finding_index,
+            )
+            continue
+
+        if not isinstance(
+            finding.get("policy"),
+            dict,
+        ):
+            old_comparison = finding.get(
+                "comparison"
+            )
+
+            old_confidence = finding.get(
+                "confidence"
+            )
+
+            _downgrade_finding_for_policy_failure(
+                finding,
+                explanation=(
+                    "The telemetry evidence remains available, but the policy "
+                    "comparison is indeterminate because the model omitted the "
+                    "required policy evidence object from this finding."
+                ),
+            )
+
+            downgraded += 1
+            missing_policy_objects += 1
+
+            logger.warning(
+                "Repaired missing policy object "
+                "finding=%d old_comparison=%s "
+                "old_confidence=%s new_confidence=%s "
+                "comparison=indeterminate",
+                finding_index,
+                old_comparison,
+                old_confidence,
+                finding.get("confidence"),
             )
             continue
 
@@ -849,43 +924,13 @@ def _repair_policy_grounding(
             "confidence"
         )
 
-        finding["policy"] = {
-            "status": "unknown",
-            "evidence": "",
-            "section": "",
-        }
-
-        finding["comparison"] = (
-            "indeterminate"
-        )
-
-        finding["severity"] = (
-            "informational"
-        )
-
-        confidence = finding.get(
-            "confidence"
-        )
-
-        if (
-            isinstance(
-                confidence,
-                (int, float),
-            )
-            and not isinstance(
-                confidence,
-                bool,
-            )
-        ):
-            finding["confidence"] = min(
-                float(confidence),
-                0.5,
-            )
-
-        finding["explanation"] = (
-            "The telemetry evidence remains available, but the policy comparison "
-            "is indeterminate because the generated policy-section citation could "
-            "not be grounded in a section extracted by Playwright."
+        _downgrade_finding_for_policy_failure(
+            finding,
+            explanation=(
+                "The telemetry evidence remains available, but the policy comparison "
+                "is indeterminate because the generated policy-section citation could "
+                "not be grounded in a section extracted by Playwright."
+            ),
         )
 
         downgraded += 1
@@ -904,12 +949,14 @@ def _repair_policy_grounding(
     logger.info(
         "Policy-grounding repair complete "
         "findings=%d repaired_headings=%d "
+        "missing_policy_objects=%d "
         "optional_citations_cleared=%d "
         "downgraded=%d duration=%.3fs",
         len(findings)
         if isinstance(findings, list)
         else 0,
         repaired,
+        missing_policy_objects,
         unsupported_optional_citations,
         downgraded,
         time.perf_counter() - started,
@@ -1201,21 +1248,13 @@ def finalize_report(
         for finding_index, finding in enumerate(
             findings
         ):
-            if (
-                not isinstance(
-                    finding,
-                    dict,
-                )
-                or not isinstance(
-                    finding.get(
-                        "policy"
-                    ),
-                    dict,
-                )
+            if not isinstance(
+                finding,
+                dict,
             ):
                 logger.debug(
                     "Skipping no-policy rewrite finding=%d "
-                    "reason=invalid_finding_or_policy",
+                    "reason=invalid_finding_type",
                     finding_index,
                 )
                 continue
@@ -1228,46 +1267,12 @@ def finalize_report(
                 "confidence"
             )
 
-            finding["policy"] = {
-                "status": "unknown",
-                "evidence": "",
-                "section": "",
-            }
-
-            finding["comparison"] = (
-                "indeterminate"
-            )
-
-            finding["severity"] = (
-                "informational"
-            )
-
-            if (
-                isinstance(
-                    finding.get(
-                        "confidence"
-                    ),
-                    (int, float),
-                )
-                and not isinstance(
-                    finding.get(
-                        "confidence"
-                    ),
-                    bool,
-                )
-            ):
-                finding["confidence"] = min(
-                    float(
-                        finding[
-                            "confidence"
-                        ]
-                    ),
-                    0.5,
-                )
-
-            finding["explanation"] = (
-                "No applicable privacy policy was available, so this behavior "
-                "cannot be reliably compared with policy disclosure."
+            _downgrade_finding_for_policy_failure(
+                finding,
+                explanation=(
+                    "No applicable privacy policy was available, so this behavior "
+                    "cannot be reliably compared with policy disclosure."
+                ),
             )
 
             forced_indeterminate += 1
@@ -1359,9 +1364,9 @@ def finalize_report(
         analysis["summary"] = (
             f"During this visit, Veilance produced {len(findings)} grouped findings. "
             f"{grounding_downgrades} {noun} marked indeterminate because the "
-            "generated policy-section citation could not be grounded in the "
+            "generated policy evidence was missing or could not be grounded in the "
             "Playwright-extracted policy sections. The remaining findings passed "
-            "section-grounding validation."
+            "policy-grounding validation."
         )
 
         logger.warning(
@@ -1454,9 +1459,8 @@ def finalize_report(
         host_limitations = (
             host_limitations
             + [
-                "One or more generated policy-section citations could not be "
-                "grounded in the Playwright-extracted policy sections; affected "
-                "findings were marked indeterminate."
+                "One or more findings contained missing or ungrounded generated "
+                "policy evidence; affected findings were marked indeterminate."
             ]
         )
 
@@ -1479,8 +1483,6 @@ def finalize_report(
             ]
         ),
     )
-
-    logger.debug(f"=== START RAW OUTPUT ===\n{json.dumps(report, indent=2)}\n=== END RAW OUTPUT ===")
 
     _validate_policy_grounding(
         report,
@@ -1987,13 +1989,6 @@ def generate_report(
         "Generated output prefix=%r",
         generated[:500],
     )
-
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug(
-            "===== BEGIN RAW MODEL OUTPUT =====\n%s\n"
-            "===== END RAW MODEL OUTPUT =====",
-            generated,
-        )
 
     parsed = parse_json(
         generated

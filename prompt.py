@@ -98,6 +98,8 @@ Return exactly one valid JSON object with this shape and no other keys:
 Output rules:
 - Output JSON only: no Markdown fence, prose, comments, citations, or tool call.
 - Use standard JSON double quotes, true, false, and null.
+- Every findings item must contain all nine required keys shown above. Never omit policy. Every policy object must contain status, evidence, and section.
+- If policy evidence for a finding cannot be grounded in policy_document.sections, use policy status unknown, empty evidence and section, comparison indeterminate, and informational severity.
 - privacy_policy.url is the raw applicable URL from policy_document, or an empty string if none was found. Never use Markdown links.
 - policy.evidence is a concise plain-text description or short excerpt grounded in policy_document.sections. Do not add URLs or citations.
 - telemetry.evidence contains short facts directly supported by seen_behavior. Do not invent evidence or URLs.
@@ -119,6 +121,14 @@ def build_user_prompt(analysis_input: dict) -> str:
             sort_keys=True,
             separators=(",", ":"),
         )
+        + "\n\nMANDATORY FINAL STRUCTURE CHECK:\n"
+        + "Every object in findings must contain exactly these keys: behavior, "
+        + "category, description, policy, telemetry, comparison, severity, "
+        + "confidence, and explanation. Never omit policy. The policy object must "
+        + "always contain status, evidence, and section. If policy evidence cannot "
+        + "be grounded in policy_document.sections, use policy status unknown with "
+        + "empty evidence and section, comparison indeterminate, and informational "
+        + "severity. Verify every finding before returning the JSON object."
     )
 
 
