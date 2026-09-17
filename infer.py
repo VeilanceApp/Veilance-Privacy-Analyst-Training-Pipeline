@@ -1480,6 +1480,8 @@ def finalize_report(
         ),
     )
 
+    logger.debug(f"=== START RAW OUTPUT ===\n{json.dumps(report, indent=2)}\n=== END RAW OUTPUT ===")
+
     _validate_policy_grounding(
         report,
         policy_document,
