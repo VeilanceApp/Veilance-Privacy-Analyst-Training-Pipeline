@@ -33,7 +33,7 @@ def load_model(base: str, adapter: str):
     base_model = AutoModelForCausalLM.from_pretrained(
         base,
         quantization_config=quantization,
-        torch_dtype=dtype,
+        dtype=dtype,
         device_map="auto",
     )
     model = PeftModel.from_pretrained(base_model, adapter)
@@ -58,6 +58,105 @@ def _append_unique(values: list, additions: list[str]) -> list:
         if addition and addition not in output:
             output.append(addition)
     return output
+
+
+def _section_key(value: str) -> str:
+    """Normalize harmless punctuation/spacing differences in policy headings."""
+
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def _repair_policy_grounding(report: dict, policy_document: dict) -> int:
+    """Conservatively repair model section citations without inventing evidence.
+
+    Returns the number of disclosure-dependent findings downgraded because their
+    citations could not be grounded in a Playwright-extracted section.
+    """
+
+    headings = [
+        section["heading"].strip()
+        for section in policy_document.get("sections", [])
+        if isinstance(section, dict)
+        and isinstance(section.get("heading"), str)
+        and section["heading"].strip()
+    ]
+    by_key = {_section_key(heading): heading for heading in headings}
+    disclosure_statuses = {
+        "explicitly_disclosed",
+        "broadly_disclosed",
+        "implicitly_disclosed",
+        "contradicted",
+    }
+    downgraded = 0
+
+    for finding in report.get("findings", []):
+        if not isinstance(finding, dict) or not isinstance(finding.get("policy"), dict):
+            continue
+        policy = finding["policy"]
+        status = policy.get("status")
+        evidence = policy.get("evidence")
+        section_value = policy.get("section")
+        resolved = []
+        unresolved = False
+
+        if isinstance(section_value, str) and section_value.strip():
+            for cited in (item.strip() for item in section_value.split(";")):
+                if not cited:
+                    continue
+                key = _section_key(cited)
+                canonical = by_key.get(key)
+                if canonical is None and len(key) >= 8:
+                    candidates = [
+                        heading
+                        for heading in headings
+                        if key in _section_key(heading)
+                        or _section_key(heading) in key
+                    ]
+                    if len(candidates) == 1:
+                        canonical = candidates[0]
+                if canonical is None:
+                    unresolved = True
+                    break
+                if canonical not in resolved:
+                    resolved.append(canonical)
+        elif status in disclosure_statuses:
+            unresolved = True
+
+        if status in disclosure_statuses and (
+            not isinstance(evidence, str) or not evidence.strip()
+        ):
+            unresolved = True
+
+        if not unresolved:
+            if resolved:
+                policy["section"] = "; ".join(resolved)
+            continue
+
+        if status not in disclosure_statuses:
+            # An optional, unsupported citation must not crash an otherwise valid
+            # not-clearly-disclosed or unknown finding.
+            policy["evidence"] = ""
+            policy["section"] = ""
+            continue
+
+        finding["policy"] = {
+            "status": "unknown",
+            "evidence": "",
+            "section": "",
+        }
+        finding["comparison"] = "indeterminate"
+        finding["severity"] = "informational"
+        confidence = finding.get("confidence")
+        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+            finding["confidence"] = min(float(confidence), 0.5)
+        finding["explanation"] = (
+            "The telemetry evidence remains available, but the policy comparison "
+            "is indeterminate because the generated policy-section citation could "
+            "not be grounded in a section extracted by Playwright."
+        )
+        downgraded += 1
+
+    return downgraded
 
 
 def _validate_policy_grounding(report: dict, policy_document: dict) -> None:
@@ -144,6 +243,12 @@ def finalize_report(report: dict, analysis_input: dict) -> dict:
                 "cannot be reliably compared with policy disclosure."
             )
 
+    grounding_downgrades = (
+        _repair_policy_grounding(report, policy_document)
+        if policy_available
+        else 0
+    )
+
     analysis = report.get("analysis")
     if not isinstance(analysis, dict):
         raise ValueError("model output analysis must be an object")
@@ -158,6 +263,15 @@ def finalize_report(report: dict, analysis_input: dict) -> dict:
             f"Veilance identified {observed_findings} grouped observed behaviors "
             "during this visit, but no applicable privacy policy was available, "
             "so the comparisons are indeterminate."
+        )
+    elif grounding_downgrades:
+        noun = "finding was" if grounding_downgrades == 1 else "findings were"
+        analysis["summary"] = (
+            f"During this visit, Veilance produced {len(findings)} grouped findings. "
+            f"{grounding_downgrades} {noun} marked indeterminate because the "
+            "generated policy-section citation could not be grounded in the "
+            "Playwright-extracted policy sections. The remaining findings passed "
+            "section-grounding validation."
         )
     analysis["counts"] = recompute_counts(findings)
     confidences = [
@@ -176,7 +290,14 @@ def finalize_report(report: dict, analysis_input: dict) -> dict:
         raise ValueError("model output important_limitations must be an array")
     report["important_limitations"] = _append_unique(
         limitations,
-        policy_document.get("limitations", []),
+        policy_document.get("limitations", [])
+        + (
+            [
+                "One or more generated policy-section citations could not be grounded in the Playwright-extracted policy sections; affected findings were marked indeterminate."
+            ]
+            if grounding_downgrades
+            else []
+        ),
     )
     _validate_policy_grounding(report, policy_document)
     return validate_report(report)
