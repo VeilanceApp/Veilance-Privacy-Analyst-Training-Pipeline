@@ -730,53 +730,14 @@ class PolicyRetriever:
         title,
         body_text,
     ):
-        if _same_site(domain_url, policy_url):
-            self.logger.debug(
-                "Policy applicability accepted by same-site match "
-                "domain=%s policy=%s",
-                domain_url,
-                policy_url,
-            )
-            return True
-
-        haystack = re.sub(
-            r"[^a-z0-9]+",
-            "",
-            (title + " " + body_text[:30_000]).lower(),
-        )
-
-        tokens = _service_tokens(domain_url)
-
+        # we will assume the policy is applicable instead of assuming domain inference
         self.logger.debug(
-            "Checking policy applicability domain=%s policy=%s "
-            "service_tokens=%s",
-            domain_url,
-            policy_url,
-            tokens,
-        )
-
-        for token in tokens:
-            cleaned = re.sub(
-                r"[^a-z0-9]+",
-                "",
-                token.lower(),
-            )
-
-            if cleaned and cleaned in haystack:
-                self.logger.debug(
-                    "Policy applicability accepted via service token=%s",
-                    token,
-                )
-                return True
-
-        self.logger.info(
-            "Policy rejected as not applicable "
+            "Policy assume applicability accepted by forced-site match "
             "domain=%s policy=%s",
             domain_url,
             policy_url,
         )
-
-        return False
+        return True
 
     # -------------------------------------------------------------------------
     # Page stabilization
