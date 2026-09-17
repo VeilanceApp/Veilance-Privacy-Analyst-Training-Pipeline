@@ -501,6 +501,8 @@ def parse_json(text: str) -> dict:
             exc.msg,
         )
 
+        logger.debug(f"=== START RAW TEXT ===\n{text}\n=== END RAW TEXT ===")
+
         start = max(
             0,
             exc.pos - 500,
