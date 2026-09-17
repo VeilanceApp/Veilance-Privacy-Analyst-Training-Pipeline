@@ -317,6 +317,7 @@ class PolicyRetriever:
         browser_name="chromium",
         headless=True,
         allow_private_network=False,
+        **kwargs
     ):
         self.timeout_ms = timeout_ms
         self.max_document_chars = max_document_chars
