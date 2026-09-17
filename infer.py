@@ -1689,6 +1689,8 @@ def _chat_inputs(
         ),
     )
 
+    logger.debug(f"=== START RAW SYSTEM PROMPT ===\n{SYSTEM_PROMPT}\n=== END RAW SYSTEM PROMPT ===")
+
     messages = [
         {
             "role": "system",
