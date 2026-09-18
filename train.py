@@ -1,6 +1,5 @@
 import argparse
 import json
-import os
 import shutil
 
 from pathlib import Path
@@ -12,7 +11,11 @@ from accelerate import PartialState
 from accelerate.utils import InitProcessGroupKwargs
 from datasets import load_dataset, load_from_disk
 from peft import LoraConfig
-from transformers import AutoTokenizer, BitsAndBytesConfig
+from transformers import (
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    EarlyStoppingCallback,
+)
 from trl import SFTConfig, SFTTrainer
 
 
@@ -41,8 +44,13 @@ def render_non_thinking_example(example: dict, tokenizer) -> dict:
             add_generation_prompt=True,
             enable_thinking=False,
         )
+
     except TypeError:
-        prompt_messages = [dict(message) for message in prompt_messages]
+        prompt_messages = [
+            dict(message)
+            for message in prompt_messages
+        ]
+
         prompt_messages[-1]["content"] += "\n/no_think"
 
         prompt_text = tokenizer.apply_chat_template(
@@ -69,6 +77,7 @@ def validate_lengths(
     split_name: str,
     num_proc: int,
 ) -> None:
+
     print(
         f"Validating token lengths for {split_name}: "
         f"{len(dataset):,} examples using {num_proc} processes"
@@ -146,6 +155,7 @@ def preprocess_datasets(
     max_length: int,
     num_proc: int,
 ) -> None:
+
     print("Loading raw training dataset...")
 
     train_dataset = load_dataset(
@@ -168,7 +178,10 @@ def preprocess_datasets(
         f"eval={len(eval_dataset):,}"
     )
 
-    keep_columns = {"prompt", "completion"}
+    keep_columns = {
+        "prompt",
+        "completion",
+    }
 
     train_remove_columns = [
         column
@@ -189,7 +202,9 @@ def preprocess_datasets(
 
     train_dataset = train_dataset.map(
         render_non_thinking_example,
-        fn_kwargs={"tokenizer": tokenizer},
+        fn_kwargs={
+            "tokenizer": tokenizer,
+        },
         remove_columns=train_remove_columns,
         num_proc=num_proc,
         desc="Render non-thinking training prompts",
@@ -202,7 +217,9 @@ def preprocess_datasets(
 
     eval_dataset = eval_dataset.map(
         render_non_thinking_example,
-        fn_kwargs={"tokenizer": tokenizer},
+        fn_kwargs={
+            "tokenizer": tokenizer,
+        },
         remove_columns=eval_remove_columns,
         num_proc=num_proc,
         desc="Render non-thinking evaluation prompts",
@@ -235,14 +252,20 @@ def preprocess_datasets(
         exist_ok=True,
     )
 
-    print(f"Saving training cache to {train_cache}")
+    print(
+        f"Saving training cache to "
+        f"{train_cache}"
+    )
 
     train_dataset.save_to_disk(
         str(train_cache),
         num_proc=num_proc,
     )
 
-    print(f"Saving evaluation cache to {eval_cache}")
+    print(
+        f"Saving evaluation cache to "
+        f"{eval_cache}"
+    )
 
     eval_dataset.save_to_disk(
         str(eval_cache),
@@ -253,11 +276,12 @@ def preprocess_datasets(
 
 
 def main() -> None:
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
         "--model",
-        default="Qwen/Qwen3-1.7B",
+        default="Qwen/Qwen3-4B",
     )
 
     parser.add_argument(
@@ -275,10 +299,11 @@ def main() -> None:
         required=True,
     )
 
+    # One epoch is intentional.
     parser.add_argument(
         "--epochs",
         type=float,
-        default=3,
+        default=1,
     )
 
     parser.add_argument(
@@ -324,50 +349,159 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--eval-samples",
+        type=int,
+        default=4096,
+        help=(
+            "Number of validation examples used during "
+            "training. Full validation is still run at end."
+        ),
+    )
+
+    parser.add_argument(
+        "--eval-steps",
+        type=int,
+        default=250,
+    )
+
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=3,
+    )
+
+    parser.add_argument(
+        "--skip-final-full-eval",
+        action="store_true",
+    )
+
+    parser.add_argument(
         "--rebuild-cache",
         action="store_true",
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
     )
 
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
-        raise SystemExit("CUDA GPU required")
+        raise SystemExit(
+            "CUDA GPU required"
+        )
 
     process_group_kwargs = InitProcessGroupKwargs(
         timeout=timedelta(minutes=60),
     ).to_kwargs()
 
-    state = PartialState(**process_group_kwargs)
+    state = PartialState(
+        **process_group_kwargs
+    )
 
     rank = state.process_index
     local_rank = state.local_process_index
 
-    train_path = Path(args.train).resolve()
-    eval_path = Path(args.eval).resolve()
-    output_path = Path(args.output).resolve()
+    train_path = Path(
+        args.train
+    ).resolve()
 
-    done_file = output_path / "DONE"
+    eval_path = Path(
+        args.eval
+    ).resolve()
 
-    cache_root = output_path.parent / (
-        f".{output_path.name}-preprocessed"
+    output_path = Path(
+        args.output
+    ).resolve()
+
+    done_file = (
+        output_path
+        / "DONE"
     )
 
-    train_cache = cache_root / "train"
-    eval_cache = cache_root / "eval"
+    cache_root = (
+        output_path.parent
+        / f".{output_path.name}-preprocessed"
+    )
+
+    train_cache = (
+        cache_root
+        / "train"
+    )
+
+    eval_cache = (
+        cache_root
+        / "eval"
+    )
 
     if state.is_main_process:
+
         print("=" * 70)
         print("Verity training")
         print("=" * 70)
-        print(f"Model:               {args.model}")
-        print(f"Train file:          {train_path}")
-        print(f"Eval file:           {eval_path}")
-        print(f"Output:              {output_path}")
-        print(f"World size:          {state.num_processes}")
-        print(f"Preprocess workers:  {args.preprocess_workers}")
-        print(f"Dataset workers:     {args.dataset_workers}")
-        print(f"DataLoader workers:  {args.dataloader_workers}")
-        print(f"Max length:          {args.max_length}")
+
+        print(
+            f"Model:               "
+            f"{args.model}"
+        )
+
+        print(
+            f"Train file:          "
+            f"{train_path}"
+        )
+
+        print(
+            f"Eval file:           "
+            f"{eval_path}"
+        )
+
+        print(
+            f"Output:              "
+            f"{output_path}"
+        )
+
+        print(
+            f"World size:          "
+            f"{state.num_processes}"
+        )
+
+        print(
+            f"Epochs:              "
+            f"{args.epochs}"
+        )
+
+        print(
+            f"Preprocess workers:  "
+            f"{args.preprocess_workers}"
+        )
+
+        print(
+            f"Dataset workers:     "
+            f"{args.dataset_workers}"
+        )
+
+        print(
+            f"DataLoader workers:  "
+            f"{args.dataloader_workers}"
+        )
+
+        print(
+            f"Max length:          "
+            f"{args.max_length}"
+        )
+
+        print(
+            f"Training eval size:  "
+            f"{args.eval_samples}"
+        )
+
+        print(
+            f"Evaluation interval: "
+            f"{args.eval_steps}"
+        )
+
         print("=" * 70)
 
         if done_file.exists():
@@ -387,7 +521,9 @@ def main() -> None:
     )
 
     if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token = (
+            tokenizer.eos_token
+        )
 
     cache_exists = (
         train_cache.exists()
@@ -395,10 +531,14 @@ def main() -> None:
     )
 
     if state.is_main_process:
-        if args.rebuild_cache or not cache_exists:
+
+        if (
+            args.rebuild_cache
+            or not cache_exists
+        ):
             print(
-                "Building preprocessed dataset cache "
-                "on rank 0..."
+                "Building preprocessed dataset "
+                "cache on rank 0..."
             )
 
             preprocess_datasets(
@@ -410,6 +550,7 @@ def main() -> None:
                 max_length=args.max_length,
                 num_proc=args.preprocess_workers,
             )
+
         else:
             print(
                 "Using existing preprocessed "
@@ -419,22 +560,50 @@ def main() -> None:
     state.wait_for_everyone()
 
     print(
-        f"[rank {rank}] loading processed datasets"
+        f"[rank {rank}] loading "
+        f"processed datasets"
     )
 
     train_dataset = load_from_disk(
         str(train_cache)
     )
 
-    eval_dataset = load_from_disk(
+    full_eval_dataset = load_from_disk(
         str(eval_cache)
     )
 
+    #
+    # Use a deterministic representative subset
+    # for frequent training-time evaluation.
+    #
+    eval_sample_count = min(
+        args.eval_samples,
+        len(full_eval_dataset),
+    )
+
+    eval_dataset = (
+        full_eval_dataset
+        .shuffle(seed=args.seed)
+        .select(
+            range(eval_sample_count)
+        )
+    )
+
     if state.is_main_process:
+
         print(
-            f"Processed dataset sizes: "
-            f"train={len(train_dataset):,}, "
-            f"eval={len(eval_dataset):,}"
+            f"Processed training size: "
+            f"{len(train_dataset):,}"
+        )
+
+        print(
+            f"Full validation size:   "
+            f"{len(full_eval_dataset):,}"
+        )
+
+        print(
+            f"Training validation:    "
+            f"{len(eval_dataset):,}"
         )
 
     quantization = BitsAndBytesConfig(
@@ -454,58 +623,114 @@ def main() -> None:
     )
 
     config = SFTConfig(
-        output_dir=str(output_path),
+        output_dir=str(
+            output_path
+        ),
 
         num_train_epochs=args.epochs,
+
         learning_rate=args.learning_rate,
-        ddp_timeout=3600,
-
-        per_device_train_batch_size=1,
-        per_device_eval_batch_size=1,
-
-        gradient_accumulation_steps=args.grad_accum,
-
-        dataset_num_proc=args.dataset_workers,
-        dataloader_num_workers=args.dataloader_workers,
 
         weight_decay=0.01,
+
         lr_scheduler_type="cosine",
+
+        warmup_ratio=0.03,
+
+        per_device_train_batch_size=1,
+
+        per_device_eval_batch_size=1,
+
+        gradient_accumulation_steps=(
+            args.grad_accum
+        ),
+
+        dataset_num_proc=(
+            args.dataset_workers
+        ),
+
+        dataloader_num_workers=(
+            args.dataloader_workers
+        ),
+
+        dataloader_pin_memory=True,
+
+        #
+        # Important for your DDP warning.
+        #
+        ddp_find_unused_parameters=False,
+
+        ddp_timeout=3600,
 
         logging_steps=10,
 
+        #
+        # Do not evaluate every 50 steps.
+        #
         eval_strategy="steps",
-        eval_steps=50,
+        eval_steps=args.eval_steps,
 
+        #
+        # Keep checkpoints synchronized with eval.
+        #
         save_strategy="steps",
-        save_steps=50,
+        save_steps=args.eval_steps,
         save_total_limit=3,
 
         load_best_model_at_end=True,
+
         metric_for_best_model="eval_loss",
+
         greater_is_better=False,
 
         max_length=args.max_length,
+
+        #
+        # Leave packing disabled because the
+        # completion boundaries matter here.
+        #
         packing=False,
+
         completion_only_loss=True,
 
         gradient_checkpointing=True,
+
         gradient_checkpointing_kwargs={
-            "use_reentrant": False
+            "use_reentrant": False,
         },
 
         bf16=bf16,
+
         fp16=not bf16,
 
         report_to="none",
 
+        seed=args.seed,
+
+        data_seed=args.seed,
+
         model_init_kwargs={
-            "quantization_config": quantization,
+            "quantization_config": (
+                quantization
+            ),
             "device_map": {
                 "": local_rank
             },
             "torch_dtype": dtype,
         },
     )
+
+    callbacks = []
+
+    if args.early_stopping_patience > 0:
+        callbacks.append(
+            EarlyStoppingCallback(
+                early_stopping_patience=(
+                    args.early_stopping_patience
+                ),
+                early_stopping_threshold=0.001,
+            )
+        )
 
     trainer = SFTTrainer(
         model=args.model,
@@ -514,6 +739,7 @@ def main() -> None:
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
         peft_config=lora,
+        callbacks=callbacks,
     )
 
     if state.is_main_process:
@@ -521,6 +747,11 @@ def main() -> None:
 
     trainer.train()
 
+    #
+    # Because load_best_model_at_end=True,
+    # trainer.model now contains the best
+    # validation checkpoint.
+    #
     trainer.save_model(
         str(output_path)
     )
@@ -530,6 +761,41 @@ def main() -> None:
             str(output_path)
         )
 
+    #
+    # Run the expensive complete validation
+    # dataset exactly once.
+    #
+    final_metrics = None
+
+    if not args.skip_final_full_eval:
+
+        if state.is_main_process:
+            print(
+                "Running final evaluation "
+                f"against all "
+                f"{len(full_eval_dataset):,} "
+                "validation examples..."
+            )
+
+        final_metrics = trainer.evaluate(
+            eval_dataset=full_eval_dataset,
+            metric_key_prefix="final_eval",
+        )
+
+        if trainer.is_world_process_zero():
+
+            (
+                output_path
+                / "final_eval_metrics.json"
+            ).write_text(
+                json.dumps(
+                    final_metrics,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
     if (
         torch.distributed.is_available()
         and torch.distributed.is_initialized()
@@ -537,6 +803,7 @@ def main() -> None:
         torch.distributed.barrier()
 
     if trainer.is_world_process_zero():
+
         output_path.mkdir(
             parents=True,
             exist_ok=True,
@@ -553,11 +820,30 @@ def main() -> None:
             "thinking_enabled": False,
             "completion_only_loss": True,
             "epochs": args.epochs,
-            "learning_rate": args.learning_rate,
+            "learning_rate": (
+                args.learning_rate
+            ),
             "lora_r": args.lora_r,
-            "gradient_accumulation_steps": args.grad_accum,
-            "world_size": state.num_processes,
+            "gradient_accumulation_steps": (
+                args.grad_accum
+            ),
+            "world_size": (
+                state.num_processes
+            ),
             "bf16": bf16,
+            "training_eval_samples": (
+                eval_sample_count
+            ),
+            "full_eval_samples": (
+                len(full_eval_dataset)
+            ),
+            "eval_steps": (
+                args.eval_steps
+            ),
+            "early_stopping_patience": (
+                args.early_stopping_patience
+            ),
+            "seed": args.seed,
         }
 
         (
