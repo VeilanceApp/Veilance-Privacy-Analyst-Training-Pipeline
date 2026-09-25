@@ -2,9 +2,9 @@
 
 import argparse
 import json
+import re
 import time
 from collections import Counter
-from difflib import SequenceMatcher
 from pathlib import Path
 
 from sklearn.metrics import accuracy_score, f1_score
@@ -54,7 +54,11 @@ def safe_div(a, b):
     return a / b if b else 0.0
 
 
-def nested_get(obj, *keys, default=None):
+def nested_get(
+    obj,
+    *keys,
+    default=None,
+):
     value = obj
 
     for key in keys:
@@ -69,52 +73,160 @@ def nested_get(obj, *keys, default=None):
     return value
 
 
+def normalize_text(value):
+    if not isinstance(value, str):
+        return ""
+
+    value = value.casefold()
+
+    value = re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        value,
+    )
+
+    return " ".join(
+        value.split()
+    )
+
+
 # =============================================================================
-# Token correctness
+# Behavior normalization
+# =============================================================================
+#
+# Verity is generative. A semantically correct behavior should not become
+# one false-positive + one false-negative merely because the generated
+# behavior identifier uses a slightly different label.
+#
+# Keep aliases conservative. Add aliases only when they clearly represent
+# the same benchmark concept.
 # =============================================================================
 
 
-def tokenize_json(tokenizer, value):
+BEHAVIOR_ALIASES = {
+    # Analytics
+    "analytics_tracking":
+        "analytics_tracking",
+
+    "analytics_and_measurement":
+        "analytics_tracking",
+
+    "performance_and_beacon_measurement":
+        "analytics_tracking",
+
+    "google_analytics_activity":
+        "analytics_tracking",
+
+    # Browser/device characteristics
+    "browser_and_device_characteristics":
+        "browser_and_device_characteristics",
+
+    "browser_characteristics":
+        "browser_and_device_characteristics",
+
+    "device_characteristics":
+        "browser_and_device_characteristics",
+
+    "navigator_characteristics":
+        "browser_and_device_characteristics",
+
+    # Cookies
+    "cookies":
+        "cookies",
+
+    "cookie_access":
+        "cookies",
+
+    "cookie_activity":
+        "cookies",
+
+    # Storage
+    "browser_storage":
+        "browser_storage",
+
+    "storage_activity":
+        "browser_storage",
+
+    "persistent_storage":
+        "browser_storage",
+
+    # Third-party network activity
+    "third_party_communications":
+        "third_party_communications",
+
+    "third_party_requests":
+        "third_party_communications",
+
+    "third_party_network_activity":
+        "third_party_communications",
+
+    # Advertising
+    "advertising_tracking":
+        "advertising_tracking",
+
+    "advertising":
+        "advertising_tracking",
+
+    "ad_tracking":
+        "advertising_tracking",
+
+    # Tag manager
+    "tag_manager_activity":
+        "tag_manager_activity",
+
+    "tag_manager":
+        "tag_manager_activity",
+
+    "google_tag_manager_activity":
+        "tag_manager_activity",
+
+    # Performance API
+    "performance_timing":
+        "performance_timing",
+
+    "performance_timing_access":
+        "performance_timing",
+
+    "browser_performance_timing":
+        "performance_timing",
+
+    # Sensors
+    "device_sensor_access":
+        "device_sensor_access",
+
+    "device_sensors":
+        "device_sensor_access",
+
+    "sensor_access":
+        "device_sensor_access",
+}
+
+
+def canonical_behavior_name(value):
+    if not isinstance(value, str):
+        return ""
+
+    normalized = value.strip().casefold()
+
+    return BEHAVIOR_ALIASES.get(
+        normalized,
+        normalized,
+    )
+
+
+# =============================================================================
+# Token metrics
+# =============================================================================
+
+
+def tokenize_json(
+    tokenizer,
+    value,
+):
     return tokenizer.encode(
         canonical_json(value),
         add_special_tokens=False,
     )
-
-
-def token_sequence_correctness(
-    tokenizer,
-    expected,
-    predicted,
-):
-    """
-    Ordered token similarity.
-
-    This is better than simple position-by-position accuracy because one
-    inserted token does not make every token after it appear incorrect.
-    """
-
-    gold = tokenize_json(
-        tokenizer,
-        expected,
-    )
-
-    pred = tokenize_json(
-        tokenizer,
-        predicted,
-    )
-
-    if not gold and not pred:
-        return 1.0
-
-    if not gold or not pred:
-        return 0.0
-
-    return SequenceMatcher(
-        None,
-        gold,
-        pred,
-        autojunk=False,
-    ).ratio()
 
 
 def token_overlap(
@@ -123,7 +235,12 @@ def token_overlap(
     predicted,
 ):
     """
-    Token precision / recall / F1 without considering token order.
+    Bag-of-token precision / recall / F1.
+
+    Token F1 is the primary token correctness metric.
+
+    This avoids making harmless JSON ordering or insertion differences destroy
+    the score for every token that follows.
     """
 
     gold = tokenize_json(
@@ -177,6 +294,10 @@ def token_overlap(
         "precision": precision,
         "recall": recall,
         "f1": f1,
+
+        # This is the headline token correctness number.
+        "correctness": f1,
+
         "matching_tokens": overlap,
         "expected_tokens": len(gold),
         "predicted_tokens": len(pred),
@@ -184,7 +305,7 @@ def token_overlap(
 
 
 # =============================================================================
-# Finding metrics
+# Finding normalization
 # =============================================================================
 
 
@@ -194,7 +315,10 @@ def findings_by_behavior(report):
         []
     )
 
-    if not isinstance(findings, list):
+    if not isinstance(
+        findings,
+        list,
+    ):
         return {}
 
     result = {}
@@ -206,17 +330,27 @@ def findings_by_behavior(report):
         ):
             continue
 
-        behavior = finding.get(
-            "behavior"
+        behavior = canonical_behavior_name(
+            finding.get(
+                "behavior"
+            )
         )
 
-        if isinstance(
-            behavior,
-            str,
-        ):
+        if not behavior:
+            continue
+
+        # If the model emitted duplicate aliases for the same canonical
+        # behavior, keep the first instead of treating them as separate
+        # benchmark findings.
+        if behavior not in result:
             result[behavior] = finding
 
     return result
+
+
+# =============================================================================
+# Finding metrics
+# =============================================================================
 
 
 def behavior_metrics(
@@ -231,26 +365,28 @@ def behavior_metrics(
         predicted_findings
     )
 
-    tp = len(
+    true_positive = len(
         gold & pred
     )
 
-    fp = len(
+    false_positive = len(
         pred - gold
     )
 
-    fn = len(
+    false_negative = len(
         gold - pred
     )
 
     precision = safe_div(
-        tp,
-        tp + fp,
+        true_positive,
+        true_positive
+        + false_positive,
     )
 
     recall = safe_div(
-        tp,
-        tp + fn,
+        true_positive,
+        true_positive
+        + false_negative,
     )
 
     f1 = (
@@ -266,18 +402,58 @@ def behavior_metrics(
     )
 
     return {
-        "true_positive": tp,
-        "false_positive": fp,
-        "false_negative": fn,
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
+        "true_positive":
+            true_positive,
+
+        "false_positive":
+            false_positive,
+
+        "false_negative":
+            false_negative,
+
+        "precision":
+            precision,
+
+        "recall":
+            recall,
+
+        "f1":
+            f1,
     }
 
 
 # =============================================================================
-# Evidence metrics
+# Evidence normalization
 # =============================================================================
+
+
+def normalize_evidence_item(value):
+    """
+    Normalize harmless wording differences.
+
+    We still require the evidence to be substantially the same; this is not
+    semantic embedding matching.
+    """
+
+    text = normalize_text(
+        value
+    )
+
+    replacements = {
+        "observed for 1 requests":
+            "observed for 1 request",
+
+        "observed 1 times":
+            "observed 1 time",
+    }
+
+    for old, new in replacements.items():
+        text = text.replace(
+            old,
+            new,
+        )
+
+    return text
 
 
 def evidence_accuracy(
@@ -285,12 +461,14 @@ def evidence_accuracy(
     predicted_findings,
 ):
     """
-    Checks exact telemetry evidence strings for findings that exist in both
-    expected and predicted outputs.
+    Evidence accuracy over behavior-aligned findings.
+
+    Uses normalized evidence strings and computes micro precision/recall/F1.
     """
 
-    total = 0
-    correct = 0
+    true_positive = 0
+    false_positive = 0
+    false_negative = 0
 
     for behavior, gold_finding in (
         expected_findings.items()
@@ -301,18 +479,8 @@ def evidence_accuracy(
             )
         )
 
-        if pred_finding is None:
-            continue
-
         gold_evidence = nested_get(
             gold_finding,
-            "telemetry",
-            "evidence",
-            default=[],
-        )
-
-        pred_evidence = nested_get(
-            pred_finding,
             "telemetry",
             "evidence",
             default=[],
@@ -324,32 +492,104 @@ def evidence_accuracy(
         ):
             gold_evidence = []
 
+        gold_set = {
+            normalize_evidence_item(
+                item
+            )
+            for item in gold_evidence
+            if normalize_evidence_item(
+                item
+            )
+        }
+
+        if pred_finding is None:
+            true_positive += 0
+            false_negative += len(
+                gold_set
+            )
+            continue
+
+        pred_evidence = nested_get(
+            pred_finding,
+            "telemetry",
+            "evidence",
+            default=[],
+        )
+
         if not isinstance(
             pred_evidence,
             list,
         ):
             pred_evidence = []
 
-        gold_set = set(
-            gold_evidence
+        pred_set = {
+            normalize_evidence_item(
+                item
+            )
+            for item in pred_evidence
+            if normalize_evidence_item(
+                item
+            )
+        }
+
+        true_positive += len(
+            gold_set
+            & pred_set
         )
 
-        pred_set = set(
-            pred_evidence
+        false_positive += len(
+            pred_set
+            - gold_set
         )
 
-        total += len(
-            gold_set | pred_set
+        false_negative += len(
+            gold_set
+            - pred_set
         )
 
-        correct += len(
-            gold_set & pred_set
-        )
-
-    return safe_div(
-        correct,
-        total,
+    precision = safe_div(
+        true_positive,
+        true_positive
+        + false_positive,
     )
+
+    recall = safe_div(
+        true_positive,
+        true_positive
+        + false_negative,
+    )
+
+    f1 = (
+        2
+        * precision
+        * recall
+        / (
+            precision
+            + recall
+        )
+        if precision + recall
+        else 0.0
+    )
+
+    return {
+        "true_positive":
+            true_positive,
+
+        "false_positive":
+            false_positive,
+
+        "false_negative":
+            false_negative,
+
+        "precision":
+            precision,
+
+        "recall":
+            recall,
+
+        "f1":
+            f1,
+    }
 
 
 # =============================================================================
@@ -442,18 +682,23 @@ def main():
     print("=" * 72)
     print("VERITY MODEL BENCHMARK")
     print("=" * 72)
+
     print(
         f"Base model : {args.base_model}"
     )
+
     print(
         f"Adapter    : {args.adapter}"
     )
+
     print(
         f"Input      : {args.input}"
     )
+
     print(
         f"Expected   : {args.expected}"
     )
+
     print("=" * 72)
     print()
 
@@ -461,7 +706,9 @@ def main():
     # Load model
     # -------------------------------------------------------------------------
 
-    load_started = time.perf_counter()
+    load_started = (
+        time.perf_counter()
+    )
 
     tokenizer, model = load_model(
         args.base_model,
@@ -474,7 +721,7 @@ def main():
     )
 
     # -------------------------------------------------------------------------
-    # Prepare exact same analysis input used by normal inference
+    # Prepare inference input
     # -------------------------------------------------------------------------
 
     preparation_started = (
@@ -484,6 +731,7 @@ def main():
     analysis_input = (
         prepare_analysis_input(
             raw_input,
+
             use_supplied_policy_document=(
                 args.use_supplied_policy_document
             ),
@@ -496,7 +744,7 @@ def main():
     )
 
     # -------------------------------------------------------------------------
-    # Generate report
+    # Run inference
     # -------------------------------------------------------------------------
 
     inference_started = (
@@ -507,6 +755,7 @@ def main():
         tokenizer,
         model,
         analysis_input,
+
         max_new_tokens=(
             args.max_new_tokens
         ),
@@ -517,7 +766,10 @@ def main():
         - inference_started
     )
 
-    # Save actual model result.
+    # -------------------------------------------------------------------------
+    # Save model prediction
+    # -------------------------------------------------------------------------
+
     Path(
         args.prediction_output
     ).write_text(
@@ -534,18 +786,14 @@ def main():
     # Token metrics
     # =========================================================================
 
-    token_correctness = (
-        token_sequence_correctness(
-            tokenizer,
-            expected,
-            prediction,
-        )
-    )
-
     token_metrics = token_overlap(
         tokenizer,
         expected,
         prediction,
+    )
+
+    token_correctness = (
+        token_metrics["f1"]
     )
 
     # =========================================================================
@@ -570,8 +818,27 @@ def main():
     )
 
     # =========================================================================
-    # Comparison classifications
+    # Semantic metrics
     # =========================================================================
+    #
+    # IMPORTANT:
+    #
+    # Semantic classification metrics are calculated ONLY for behavior findings
+    # that exist in both reports.
+    #
+    # Missing/extra findings are already penalized by finding precision/recall/F1.
+    # Penalizing them again as "__missing__" comparison/policy/telemetry labels
+    # double-counts the same error.
+    # =========================================================================
+
+    shared_behaviors = sorted(
+        set(
+            expected_findings
+        )
+        & set(
+            predicted_findings
+        )
+    )
 
     comparison_gold = []
     comparison_pred = []
@@ -584,104 +851,31 @@ def main():
 
     confidence_errors = []
 
-    accusation_labels = {
-        "observed_only",
-        "possible_contradiction",
-    }
-
-    predicted_accusations = 0
-    false_accusations = 0
-
-    for behavior_name, gold_finding in (
-        expected_findings.items()
-    ):
-        pred_finding = (
-            predicted_findings.get(
+    for behavior_name in shared_behaviors:
+        gold_finding = (
+            expected_findings[
                 behavior_name
-            )
+            ]
         )
 
-        gold_comparison = (
+        pred_finding = (
+            predicted_findings[
+                behavior_name
+            ]
+        )
+
+        comparison_gold.append(
             gold_finding.get(
                 "comparison",
                 "__missing__",
             )
         )
 
-        if pred_finding is None:
-            pred_comparison = (
-                "__missing__"
-            )
-
-            pred_policy_status = (
-                "__missing__"
-            )
-
-            pred_telemetry_status = (
-                "__missing__"
-            )
-
-        else:
-            pred_comparison = (
-                pred_finding.get(
-                    "comparison",
-                    "__missing__",
-                )
-            )
-
-            pred_policy_status = (
-                nested_get(
-                    pred_finding,
-                    "policy",
-                    "status",
-                    default="__missing__",
-                )
-            )
-
-            pred_telemetry_status = (
-                nested_get(
-                    pred_finding,
-                    "telemetry",
-                    "status",
-                    default="__missing__",
-                )
-            )
-
-            gold_confidence = (
-                gold_finding.get(
-                    "confidence"
-                )
-            )
-
-            pred_confidence = (
-                pred_finding.get(
-                    "confidence"
-                )
-            )
-
-            if (
-                isinstance(
-                    gold_confidence,
-                    (int, float),
-                )
-                and isinstance(
-                    pred_confidence,
-                    (int, float),
-                )
-            ):
-                confidence_errors.append(
-                    abs(
-                        gold_confidence
-                        - pred_confidence
-                    )
-                )
-
-        comparison_gold.append(
-            gold_comparison
-        )
-
         comparison_pred.append(
-            pred_comparison
+            pred_finding.get(
+                "comparison",
+                "__missing__",
+            )
         )
 
         policy_gold.append(
@@ -694,7 +888,12 @@ def main():
         )
 
         policy_pred.append(
-            pred_policy_status
+            nested_get(
+                pred_finding,
+                "policy",
+                "status",
+                default="__missing__",
+            )
         )
 
         telemetry_gold.append(
@@ -707,52 +906,57 @@ def main():
         )
 
         telemetry_pred.append(
-            pred_telemetry_status
+            nested_get(
+                pred_finding,
+                "telemetry",
+                "status",
+                default="__missing__",
+            )
         )
 
-    # -------------------------------------------------------------------------
-    # False accusations
-    # -------------------------------------------------------------------------
+        gold_confidence = (
+            gold_finding.get(
+                "confidence"
+            )
+        )
 
-    for behavior_name, pred_finding in (
-        predicted_findings.items()
-    ):
-        comparison = (
+        pred_confidence = (
             pred_finding.get(
-                "comparison"
+                "confidence"
             )
         )
 
         if (
-            comparison
-            not in accusation_labels
-        ):
-            continue
-
-        predicted_accusations += 1
-
-        gold_finding = (
-            expected_findings.get(
-                behavior_name
+            isinstance(
+                gold_confidence,
+                (int, float),
             )
-        )
-
-        if (
-            gold_finding is None
-            or gold_finding.get(
-                "comparison"
+            and not isinstance(
+                gold_confidence,
+                bool,
             )
-            not in accusation_labels
+            and isinstance(
+                pred_confidence,
+                (int, float),
+            )
+            and not isinstance(
+                pred_confidence,
+                bool,
+            )
         ):
-            false_accusations += 1
-
-    false_accusation_rate = safe_div(
-        false_accusations,
-        predicted_accusations,
-    )
+            confidence_errors.append(
+                abs(
+                    float(
+                        gold_confidence
+                    )
+                    - float(
+                        pred_confidence
+                    )
+                )
+            )
 
     # =========================================================================
-    # Accuracy metrics
+    # Classification scores
     # =========================================================================
 
     comparison_accuracy = (
@@ -768,6 +972,7 @@ def main():
         f1_score(
             comparison_gold,
             comparison_pred,
+
             average="macro",
             zero_division=0,
         )
@@ -793,24 +998,100 @@ def main():
         else 0.0
     )
 
-    telemetry_evidence_accuracy = (
-        evidence_accuracy(
-            expected_findings,
-            predicted_findings,
-        )
+    # =========================================================================
+    # Evidence metrics
+    # =========================================================================
+
+    evidence = evidence_accuracy(
+        expected_findings,
+        predicted_findings,
     )
 
+    # =========================================================================
+    # Confidence
+    # =========================================================================
+
     confidence_mae = (
-        sum(confidence_errors)
-        / len(confidence_errors)
+        sum(
+            confidence_errors
+        )
+        / len(
+            confidence_errors
+        )
         if confidence_errors
         else 0.0
     )
 
     confidence_accuracy = max(
         0.0,
-        1.0 - confidence_mae,
+        1.0
+        - confidence_mae,
     )
+
+    # =========================================================================
+    # False accusations
+    # =========================================================================
+
+    accusation_labels = {
+        "observed_only",
+        "possible_contradiction",
+    }
+
+    predicted_accusations = 0
+    false_accusations = 0
+
+    for (
+        behavior_name,
+        pred_finding,
+    ) in predicted_findings.items():
+
+        pred_comparison = (
+            pred_finding.get(
+                "comparison"
+            )
+        )
+
+        if (
+            pred_comparison
+            not in accusation_labels
+        ):
+            continue
+
+        predicted_accusations += 1
+
+        gold_finding = (
+            expected_findings.get(
+                behavior_name
+            )
+        )
+
+        if gold_finding is None:
+            false_accusations += 1
+            continue
+
+        if (
+            gold_finding.get(
+                "comparison"
+            )
+            not in accusation_labels
+        ):
+            false_accusations += 1
+
+    false_accusation_rate = (
+        safe_div(
+            false_accusations,
+            predicted_accusations,
+        )
+    )
+
+    accusation_safety = (
+        1.0
+        - false_accusation_rate
+    )
+
+    # =========================================================================
+    # Exact JSON
+    # =========================================================================
 
     exact_json_match = (
         canonical_json(
@@ -826,79 +1107,125 @@ def main():
     # Composite Verity score
     # =========================================================================
     #
-    # Semantic correctness matters much more than exact text.
+    # Each major capability is represented approximately once.
     #
-    # 25% comparison accuracy
-    # 15% comparison macro-F1
-    # 15% finding F1
-    # 10% policy-status accuracy
-    # 10% telemetry-status accuracy
-    # 10% telemetry evidence accuracy
-    #  5% token correctness
-    #  5% confidence accuracy
-    #  5% false-accusation safety
+    # 30% Finding F1
+    #     Did Verity identify the correct behaviors?
+    #
+    # 25% Comparison accuracy
+    #     Did Verity classify policy-vs-telemetry correctly?
+    #
+    # 15% Policy status accuracy
+    #     Did Verity correctly interpret disclosure status?
+    #
+    # 10% Telemetry evidence F1
+    #     Did Verity ground its findings in the right evidence?
+    #
+    # 10% Token F1
+    #     How similar is the complete structured answer?
+    #
+    # 10% Safety
+    #     Does Verity avoid unsupported disclosure-gap/contradiction claims?
+    #
+    # We intentionally do NOT include:
+    #
+    # - comparison macro F1 in the composite
+    # - telemetry-status accuracy in the composite
+    # - confidence accuracy in the composite
+    #
+    # They remain diagnostic metrics. Including all of them would repeatedly
+    # punish the same underlying mistake.
     # =========================================================================
-
-    accusation_safety = (
-        1.0
-        - false_accusation_rate
-    )
 
     overall_score = (
-        comparison_accuracy * 0.25
-        + comparison_macro_f1 * 0.15
-        + behavior["f1"] * 0.15
-        + policy_status_accuracy * 0.10
-        + telemetry_status_accuracy * 0.10
-        + telemetry_evidence_accuracy * 0.10
-        + token_correctness * 0.05
-        + confidence_accuracy * 0.05
-        + accusation_safety * 0.05
+        behavior["f1"]
+        * 0.30
+
+        + comparison_accuracy
+        * 0.25
+
+        + policy_status_accuracy
+        * 0.15
+
+        + evidence["f1"]
+        * 0.10
+
+        + token_correctness
+        * 0.10
+
+        + accusation_safety
+        * 0.10
     )
 
     # =========================================================================
-    # Output
+    # Results JSON
     # =========================================================================
 
     results = {
         "model": {
-            "base_model": args.base_model,
-            "adapter": args.adapter,
+            "base_model":
+                args.base_model,
+
+            "adapter":
+                args.adapter,
         },
 
         "score": {
-            "overall": overall_score,
-            "overall_percent": round(
-                overall_score * 100,
-                2,
-            ),
+            "overall":
+                overall_score,
+
+            "overall_percent":
+                round(
+                    overall_score
+                    * 100,
+                    2,
+                ),
         },
 
         "token_metrics": {
-            "correctness": token_correctness,
-            "precision": token_metrics[
-                "precision"
-            ],
-            "recall": token_metrics[
-                "recall"
-            ],
-            "f1": token_metrics[
-                "f1"
-            ],
-            "matching_tokens": token_metrics[
-                "matching_tokens"
-            ],
-            "expected_tokens": token_metrics[
-                "expected_tokens"
-            ],
-            "predicted_tokens": token_metrics[
-                "predicted_tokens"
-            ],
+            "correctness":
+                token_correctness,
+
+            "precision":
+                token_metrics[
+                    "precision"
+                ],
+
+            "recall":
+                token_metrics[
+                    "recall"
+                ],
+
+            "f1":
+                token_metrics[
+                    "f1"
+                ],
+
+            "matching_tokens":
+                token_metrics[
+                    "matching_tokens"
+                ],
+
+            "expected_tokens":
+                token_metrics[
+                    "expected_tokens"
+                ],
+
+            "predicted_tokens":
+                token_metrics[
+                    "predicted_tokens"
+                ],
         },
 
-        "finding_metrics": behavior,
+        "finding_metrics":
+            behavior,
 
         "semantic_metrics": {
+            "shared_findings":
+                len(
+                    shared_behaviors
+                ),
+
             "comparison_accuracy":
                 comparison_accuracy,
 
@@ -911,8 +1238,20 @@ def main():
             "telemetry_status_accuracy":
                 telemetry_status_accuracy,
 
-            "telemetry_evidence_accuracy":
-                telemetry_evidence_accuracy,
+            "telemetry_evidence_precision":
+                evidence[
+                    "precision"
+                ],
+
+            "telemetry_evidence_recall":
+                evidence[
+                    "recall"
+                ],
+
+            "telemetry_evidence_f1":
+                evidence[
+                    "f1"
+                ],
 
             "confidence_accuracy":
                 confidence_accuracy,
@@ -935,6 +1274,33 @@ def main():
                 accusation_safety,
         },
 
+        "finding_counts": {
+            "expected":
+                len(
+                    expected_findings
+                ),
+
+            "predicted":
+                len(
+                    predicted_findings
+                ),
+
+            "shared":
+                len(
+                    shared_behaviors
+                ),
+
+            "missing":
+                behavior[
+                    "false_negative"
+                ],
+
+            "extra":
+                behavior[
+                    "false_positive"
+                ],
+        },
+
         "exact_json_match":
             exact_json_match,
 
@@ -950,6 +1316,10 @@ def main():
         },
     }
 
+    # -------------------------------------------------------------------------
+    # Save benchmark
+    # -------------------------------------------------------------------------
+
     Path(
         args.output
     ).write_text(
@@ -962,7 +1332,7 @@ def main():
     )
 
     # =========================================================================
-    # Human-readable benchmark
+    # Human-readable output
     # =========================================================================
 
     print()
@@ -975,76 +1345,108 @@ def main():
     )
 
     print()
-    print("SEMANTIC ACCURACY")
-    print(
-        f"Comparison Accuracy       : {pct(comparison_accuracy)}"
-    )
-    print(
-        f"Comparison Macro F1       : {pct(comparison_macro_f1)}"
-    )
+    print("FINDING QUALITY")
+
     print(
         f"Finding Precision         : {pct(behavior['precision'])}"
     )
+
     print(
         f"Finding Recall            : {pct(behavior['recall'])}"
     )
+
     print(
         f"Finding F1                : {pct(behavior['f1'])}"
     )
+
+    print()
+    print("SEMANTIC ACCURACY")
+
+    print(
+        f"Comparison Accuracy       : {pct(comparison_accuracy)}"
+    )
+
+    print(
+        f"Comparison Macro F1       : {pct(comparison_macro_f1)}"
+    )
+
     print(
         f"Policy Status Accuracy    : {pct(policy_status_accuracy)}"
     )
+
     print(
         f"Telemetry Status Accuracy : {pct(telemetry_status_accuracy)}"
     )
+
     print(
-        f"Telemetry Evidence        : {pct(telemetry_evidence_accuracy)}"
+        f"Evidence Precision        : {pct(evidence['precision'])}"
+    )
+
+    print(
+        f"Evidence Recall           : {pct(evidence['recall'])}"
+    )
+
+    print(
+        f"Evidence F1               : {pct(evidence['f1'])}"
     )
 
     print()
     print("TOKEN ACCURACY")
+
     print(
-        f"Token Correctness         : {pct(token_correctness)}"
+        f"Token Correctness (F1)    : {pct(token_correctness)}"
     )
+
     print(
         f"Token Precision           : {pct(token_metrics['precision'])}"
     )
+
     print(
         f"Token Recall              : {pct(token_metrics['recall'])}"
-    )
-    print(
-        f"Token F1                  : {pct(token_metrics['f1'])}"
     )
 
     print()
     print("SAFETY")
+
     print(
         f"False Accusation Rate     : {pct(false_accusation_rate)}"
     )
+
     print(
         f"Accusation Safety         : {pct(accusation_safety)}"
     )
 
     print()
-    print("OTHER")
+    print("DIAGNOSTICS")
+
     print(
         f"Confidence Accuracy       : {pct(confidence_accuracy)}"
     )
+
     print(
         f"Exact JSON Match          : {'YES' if exact_json_match else 'NO'}"
     )
+
     print(
         f"Expected Findings         : {len(expected_findings)}"
     )
+
     print(
         f"Predicted Findings        : {len(predicted_findings)}"
     )
+
+    print(
+        f"Shared Findings           : {len(shared_behaviors)}"
+    )
+
     print(
         f"Missing Findings          : {behavior['false_negative']}"
     )
+
     print(
         f"Extra Findings            : {behavior['false_positive']}"
     )
+
     print(
         f"Inference Time            : {inference_seconds:.2f}s"
     )
@@ -1055,19 +1457,24 @@ def main():
     # Post-ready output
     # =========================================================================
 
+    model_name = (
+        args.base_model
+        .split("/")[-1]
+    )
+
     print()
     print("POST-READY RESULTS")
     print("-" * 72)
 
     print(
-        f"Verity {args.base_model.split('/')[-1]} benchmark:\n"
+        f"Verity {model_name} benchmark:\n"
         f"\n"
-        f"Overall: {pct(overall_score)}\n"
-        f"Comparison accuracy: {pct(comparison_accuracy)}\n"
+        f"Overall task score: {pct(overall_score)}\n"
         f"Finding F1: {pct(behavior['f1'])}\n"
+        f"Comparison accuracy: {pct(comparison_accuracy)}\n"
         f"Policy accuracy: {pct(policy_status_accuracy)}\n"
-        f"Telemetry accuracy: {pct(telemetry_status_accuracy)}\n"
-        f"Token correctness: {pct(token_correctness)}\n"
+        f"Evidence F1: {pct(evidence['f1'])}\n"
+        f"Token F1: {pct(token_correctness)}\n"
         f"False accusation rate: {pct(false_accusation_rate)}"
     )
 
